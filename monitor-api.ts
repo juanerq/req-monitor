@@ -3,7 +3,7 @@ import fs from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import Holidays from "date-holidays";
-import { chromium, request as playwrightRequest } from "playwright";
+import { chromium } from "playwright";
 
 if (fs.existsSync(".env")) process.loadEnvFile(".env");
 
@@ -258,9 +258,28 @@ async function downloadAttachment(value: unknown, response: ServerResponse): Pro
     throw new Error("No existe sesión MiAsistencia360; ejecuta pnpm run auth");
   }
 
-  const context = await playwrightRequest.newContext({ storageState: AUTH_FILE });
+  const browser = await chromium.launch({ headless: true });
   try {
-    const upstream = await context.get(url.href, { failOnStatusCode: false });
+    const context = await browser.newContext({ storageState: AUTH_FILE });
+    const page = await context.newPage();
+    await page.goto(APP_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
+
+    const deadline = Date.now() + 60_000;
+    let upstream = await context.request.get(url.href, { failOnStatusCode: false });
+    while (upstream.status() === 401 && Date.now() < deadline) {
+      await upstream.dispose();
+      if (
+        page.url().includes("-rsso.") ||
+        await page.locator('input[type="password"]:visible').count() > 0
+      ) {
+        throw new Error("Sesión MiAsistencia360 expirada; ejecuta pnpm run auth");
+      }
+      await page.waitForTimeout(500);
+      upstream = await context.request.get(url.href, { failOnStatusCode: false });
+    }
+    if (upstream.status() === 401) {
+      throw new Error("Sesión MiAsistencia360 expirada; ejecuta pnpm run auth");
+    }
     const contentType = upstream.headers()["content-type"] ?? "application/octet-stream";
     const contentLength = Number(upstream.headers()["content-length"] ?? "0");
     const returnedToSso = new URL(upstream.url()).origin !== PORTAL_ORIGIN;
@@ -292,7 +311,7 @@ async function downloadAttachment(value: unknown, response: ServerResponse): Pro
     });
     response.end(body);
   } finally {
-    await context.dispose().catch(() => undefined);
+    await browser.close().catch(() => undefined);
   }
 }
 
