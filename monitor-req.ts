@@ -132,21 +132,23 @@ function runReqCheck(options: Options): ReqResult[] {
     throw new Error(`No existe ${options.file}. Usa reqs.txt.example como referencia`);
   }
   fs.mkdirSync(path.dirname(options.output), { recursive: true });
-  fs.rmSync(options.output, { force: true });
+  const temporaryOutput = `${options.output}.tmp`;
+  fs.rmSync(temporaryOutput, { force: true });
 
   const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
   const result = spawnSync(
     pnpm,
-    ["check-req", "--file", options.file, "--output", options.output],
+    ["check-req", "--file", options.file, "--output", temporaryOutput],
     { stdio: "inherit", env: process.env },
   );
 
   if (result.error) throw result.error;
-  if (!fs.existsSync(options.output)) {
-    throw new Error(`La consulta no generó ${options.output}`);
+  if (!fs.existsSync(temporaryOutput)) {
+    throw new Error(`La consulta no generó ${temporaryOutput}`);
   }
 
-  const results = JSON.parse(fs.readFileSync(options.output, "utf8")) as ReqResult[];
+  const results = JSON.parse(fs.readFileSync(temporaryOutput, "utf8")) as ReqResult[];
+  fs.renameSync(temporaryOutput, options.output);
   if (result.status !== 0) {
     console.warn("La consulta terminó con errores; se procesarán solo las REQ válidas");
   }

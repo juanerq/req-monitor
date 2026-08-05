@@ -163,6 +163,23 @@ function renderQueryResult(result) {
     result,
     result.attachments || comment?.attachments || [],
   );
+  const parseAttachmentDate = (value) => {
+    if (!value) return Number.NaN;
+    const parsed = new Date(String(value).replace(" at ", " "));
+    return parsed.valueOf();
+  };
+  const downloadableAttachments = attachments
+    .filter((attachment) => attachment.url)
+    .sort((left, right) => {
+      const leftTime = parseAttachmentDate(left.uploadedAt);
+      const rightTime = parseAttachmentDate(right.uploadedAt);
+      if (Number.isNaN(leftTime) && Number.isNaN(rightTime)) return 0;
+      if (Number.isNaN(leftTime)) return 1;
+      if (Number.isNaN(rightTime)) return -1;
+      return rightTime - leftTime;
+    });
+  const latestAttachment = downloadableAttachments[0] || null;
+  const olderAttachments = downloadableAttachments.slice(1);
   const links = [
     ...(result.detailUrl ? [{ label: "Abrir REQ", url: result.detailUrl }] : []),
     ...(result.pullRequestUrls || []).map((url, index) => ({ label: `Pull Request ${index + 1}`, url })),
@@ -188,20 +205,39 @@ function renderQueryResult(result) {
         </div>
         ${attachments.some((attachment) => attachment.url) ? `
           <div class="attachment-section">
-            <span class="resource-label">Archivos adjuntos <b>${attachments.filter((attachment) => attachment.url).length}</b></span>
-            <div class="attachment-grid">
-              ${attachments.filter((attachment) => attachment.url).map((attachment) => `
-                <button class="attachment-card" type="button" data-download-url="${escapeHtml(attachment.url)}" data-download-name="${escapeHtml(attachment.name)}">
-                  <span class="file-type">${escapeHtml(fileType(attachment.name))}</span>
+            <span class="resource-label">Archivos adjuntos <b>${downloadableAttachments.length}</b></span>
+            ${latestAttachment ? `
+              <div class="latest-attachment">
+                <span class="latest-attachment-label">Ultimo adjunto</span>
+                <button class="attachment-card" type="button" data-download-url="${escapeHtml(latestAttachment.url)}" data-download-name="${escapeHtml(latestAttachment.name)}">
+                  <span class="file-type">${escapeHtml(fileType(latestAttachment.name))}</span>
                   <span class="file-details">
-                    <strong>${escapeHtml(attachment.name)}</strong>
-                    <small>${escapeHtml(attachment.size || "Tamaño no disponible")}</small>
-                    <small class="file-date">Subido: ${escapeHtml(attachment.uploadedAt ? formatDate(attachment.uploadedAt) : "Fecha no disponible")}</small>
+                    <strong>${escapeHtml(latestAttachment.name)}</strong>
+                    <small>${escapeHtml(latestAttachment.size || "Tamaño no disponible")}</small>
+                    <small class="file-date">Subido: ${escapeHtml(latestAttachment.uploadedAt ? formatDate(latestAttachment.uploadedAt) : "Fecha no disponible")}</small>
                   </span>
                   <span class="file-action">Descargar</span>
                 </button>
-              `).join("")}
-            </div>
+              </div>
+            ` : ""}
+            ${olderAttachments.length > 0 ? `
+              <details class="older-attachments">
+                <summary>Ver ${olderAttachments.length} adjunto${olderAttachments.length === 1 ? "" : "s"} anterior${olderAttachments.length === 1 ? "" : "es"}</summary>
+                <div class="attachment-grid compact">
+                  ${olderAttachments.map((attachment) => `
+                    <button class="attachment-card" type="button" data-download-url="${escapeHtml(attachment.url)}" data-download-name="${escapeHtml(attachment.name)}">
+                      <span class="file-type">${escapeHtml(fileType(attachment.name))}</span>
+                      <span class="file-details">
+                        <strong>${escapeHtml(attachment.name)}</strong>
+                        <small>${escapeHtml(attachment.size || "Tamaño no disponible")}</small>
+                        <small class="file-date">Subido: ${escapeHtml(attachment.uploadedAt ? formatDate(attachment.uploadedAt) : "Fecha no disponible")}</small>
+                      </span>
+                      <span class="file-action">Descargar</span>
+                    </button>
+                  `).join("")}
+                </div>
+              </details>
+            ` : ""}
           </div>
         ` : ""}
       </div>
