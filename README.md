@@ -122,6 +122,14 @@ curl -X PUT http://127.0.0.1:8787/api/reqs \
   -d '{"reqs":["REQ000007780316","REQ000007780445"]}'
 ```
 
+Protección anti-pérdida: por defecto, `PUT /api/reqs` no reduce la lista actual; si envías menos REQ de las existentes, combina ambas listas para evitar que desaparezcan del monitoreo por accidente. Para reemplazo total intencional usa `replace=true`:
+
+```bash
+curl -X PUT 'http://127.0.0.1:8787/api/reqs?replace=true' \
+  -H 'Content-Type: application/json' \
+  -d '{"reqs":["REQ000007780316","REQ000007780445"]}'
+```
+
 Agregar o eliminar una REQ:
 
 ```bash

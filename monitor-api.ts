@@ -168,6 +168,10 @@ function writeReqs(reqs: string[]): void {
   fs.renameSync(temporary, REQ_FILE);
 }
 
+function mergeReqLists(current: string[], requested: string[]): string[] {
+  return [...new Set([...current, ...requested])];
+}
+
 function readResults(): unknown[] {
   if (!fs.existsSync(RESULTS_FILE)) return [];
   try {
@@ -499,9 +503,19 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   if (request.method === "PUT" && url.pathname === "/api/reqs") {
     const body = await readBody(request) as { reqs?: unknown };
-    const reqs = validateReqs(body.reqs);
+    const currentReqs = readReqs();
+    const requestedReqs = validateReqs(body.reqs);
+    const forceReplace = url.searchParams.get("replace") === "true";
+    const wouldShrink = requestedReqs.length < currentReqs.length;
+    const reqs = forceReplace || !wouldShrink
+      ? requestedReqs
+      : mergeReqLists(currentReqs, requestedReqs);
     writeReqs(reqs);
-    json(response, 200, { reqs });
+    json(response, 200, {
+      reqs,
+      replaced: forceReplace,
+      protectedFromShrink: !forceReplace && wouldShrink,
+    });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/reqs") {
