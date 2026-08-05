@@ -1,0 +1,10 @@
+node_modules/
+artifacts/
+output/
+runtime/
+playwright/.auth/
+reqs.txt
+.env
+.env.*
+!.env.example
+*.log

@@ -1,0 +1,25 @@
+{
+  "name": "playwright",
+  "version": "1.0.0",
+  "description": "Consulta respuestas y adjuntos de REQ en MiAsistencia360",
+  "scripts": {
+    "check-req": "tsx check-req.ts",
+    "monitor-req": "tsx monitor-req.ts",
+    "monitor-api": "tsx monitor-api.ts",
+    "auth": "tsx check-req.ts --login",
+    "typecheck": "tsc"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "packageManager": "pnpm@10.33.0",
+  "devDependencies": {
+    "@types/node": "^26.1.2",
+    "playwright": "^1.62.1",
+    "tsx": "^4.23.5",
+    "typescript": "^7.0.2"
+  },
+  "dependencies": {
+    "date-holidays": "3.34.1"
+  }
+}

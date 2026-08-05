@@ -1,0 +1,33 @@
+services:
+  monitor:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: miasistencia360-monitor:local
+    restart: unless-stopped
+    init: true
+    ipc: host
+    env_file:
+      - .env
+    environment:
+      MONITOR_API_HOST: 0.0.0.0
+      MONITOR_API_PORT: 8787
+      MONITOR_INTERVAL_MINUTES: ${MONITOR_INTERVAL_MINUTES:-15}
+      MONITOR_RUN_ON_START: ${MONITOR_RUN_ON_START:-true}
+      REQ_FILE: /data/reqs.txt
+    ports:
+      - "127.0.0.1:${MONITOR_API_PORT:-8787}:8787"
+    volumes:
+      - ./runtime:/data
+      - ./artifacts:/app/artifacts
+      - ./playwright/.auth:/app/playwright/.auth
+    healthcheck:
+      test:
+        - CMD
+        - node
+        - -e
+        - fetch('http://127.0.0.1:8787/health').then(r=>{if(!r.ok)process.exit(1)}).catch(()=>process.exit(1))
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 30s

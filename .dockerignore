@@ -1,0 +1,11 @@
+node_modules
+artifacts
+runtime
+output
+.env
+.env.*
+!.env.example
+.git
+.codebase-memory
+playwright/.auth
+*.log

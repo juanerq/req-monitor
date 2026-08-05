@@ -1,0 +1,109 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <title>REQ Monitor</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <header class="topbar">
+      <div>
+        <p class="eyebrow">MIASISTENCIA360</p>
+        <h1>REQ Monitor</h1>
+      </div>
+      <div class="header-actions">
+        <div class="monitor-state">
+          <span id="status-dot" class="status-dot"></span>
+          <div>
+            <strong id="monitor-label">Conectando</strong>
+            <small id="monitor-time">Sin información</small>
+          </div>
+        </div>
+        <button id="credentials-button" class="credentials-button" type="button" title="Renovar sesión MiAsistencia360">Acceso</button>
+      </div>
+    </header>
+
+    <main>
+      <section class="summary" aria-label="Resumen de estados">
+        <article><span>Total</span><strong id="count-total">0</strong></article>
+        <article data-tone="danger"><span>Pendientes</span><strong id="count-pending">0</strong></article>
+        <article data-tone="info"><span>Respondidas</span><strong id="count-answered">0</strong></article>
+        <article data-tone="warning"><span>En validación</span><strong id="count-validation">0</strong></article>
+        <article data-tone="success"><span>Finalizadas</span><strong id="count-finished">0</strong></article>
+      </section>
+
+      <section class="command-panel">
+        <div>
+          <p class="eyebrow">CONSULTA DIRECTA</p>
+          <h2>Revisar una REQ ahora</h2>
+          <p>No la agrega al monitoreo ni envía alertas a Teams.</p>
+        </div>
+        <form id="query-form" class="inline-form">
+          <label class="sr-only" for="query-req">Número de REQ</label>
+          <input id="query-req" name="req" placeholder="REQ000007780445" autocomplete="off" required>
+          <button class="primary" type="submit">Consultar REQ</button>
+        </form>
+      </section>
+
+      <section id="query-result" class="query-result" hidden aria-live="polite"></section>
+
+      <section class="list-section">
+        <div class="section-heading">
+          <div>
+            <p class="eyebrow">SEGUIMIENTO</p>
+            <h2>REQ monitoreadas</h2>
+          </div>
+          <div class="actions">
+            <button id="refresh-button" class="secondary" type="button">Actualizar</button>
+            <button id="run-button" class="primary" type="button">Ejecutar monitor</button>
+          </div>
+        </div>
+
+        <form id="add-form" class="add-form">
+          <label for="add-req">Agregar al monitoreo</label>
+          <div class="inline-form">
+            <input id="add-req" name="req" placeholder="REQ000007780500" autocomplete="off" required>
+            <button class="secondary" type="submit">Agregar</button>
+          </div>
+        </form>
+
+        <div class="table-wrap">
+          <table>
+            <thead>
+              <tr>
+                <th>Microservicio / REQ</th>
+                <th>Estado</th>
+                <th>Detalle</th>
+                <th>Última revisión</th>
+                <th><span class="sr-only">Acciones</span></th>
+              </tr>
+            </thead>
+            <tbody id="req-list"></tbody>
+          </table>
+          <div id="empty-state" class="empty-state" hidden>No hay REQ configuradas.</div>
+        </div>
+      </section>
+    </main>
+
+    <dialog id="credentials-dialog">
+      <form id="credentials-form">
+        <p class="eyebrow">MIASISTENCIA360</p>
+        <h2>Renovar sesión</h2>
+        <p>Las credenciales se usan una sola vez. Solo se guarda la sesión resultante.</p>
+        <label for="credentials-username">Usuario</label>
+        <input id="credentials-username" name="username" autocomplete="username" required>
+        <label for="credentials-password">Contraseña</label>
+        <input id="credentials-password" name="password" type="password" autocomplete="current-password" required>
+        <div class="dialog-actions">
+          <button id="credentials-cancel" class="secondary" type="button">Cancelar</button>
+          <button class="primary" type="submit">Renovar acceso</button>
+        </div>
+      </form>
+    </dialog>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script src="/app.js"></script>
+  </body>
+</html>
