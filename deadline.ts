@@ -138,7 +138,8 @@ export function deriveCommentCycle<T extends CycleComment>(comments: readonly T[
   const ordered = entries.sort((left, right) =>
     left.time - right.time || (direction === "descending" ? right.index - left.index : left.index - right.index),
   );
-  const latestIndex = ordered.findLastIndex((entry) => entry.comment.isResponse);
+  let latestIndex = ordered.length - 1;
+  while (latestIndex >= 0 && !ordered[latestIndex].comment.isResponse) latestIndex -= 1;
   const latest = latestIndex < 0 ? null : ordered[latestIndex].comment;
   const replies = latestIndex < 0 ? [] : ordered.slice(latestIndex + 1)
     .filter((entry) => !entry.comment.isResponse).map((entry) => entry.comment);
