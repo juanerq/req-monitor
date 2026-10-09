@@ -3,6 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
+import { conversationStatus, deriveCommentCycle, type ActiveDeadline } from "./deadline.js";
 
 const APP_URL =
   process.env.APP_URL ??
@@ -43,6 +44,7 @@ type ReqResult = {
   pullRequestUrls: string[];
   detailUrl: string | null;
   latestOperationsComment: Comment | null;
+  activeDeadline: ActiveDeadline | null;
   requesterRepliesAfterOperations: Comment[];
   latestResponse: Comment | null;
   responses: Comment[];
@@ -523,27 +525,12 @@ async function inspectReq(page: Page, req: string): Promise<ReqResult> {
       isResponse: Boolean(requester) && normalizeName(comment.author) !== requester,
     }));
     const responses = comments.filter((comment) => comment.isResponse);
-    const latestOperationsCommentIndex = comments.findIndex((comment) => comment.isResponse);
-    const latestOperationsComment = latestOperationsCommentIndex >= 0
-      ? comments[latestOperationsCommentIndex]
-      : null;
-    const requesterRepliesAfterOperations = latestOperationsCommentIndex >= 0
-      ? comments
-          .slice(0, latestOperationsCommentIndex)
-          .filter((comment) => !comment.isResponse)
-      : [];
     const finalized = isFinalizedStatus(data.status);
+    const cycle = deriveCommentCycle(comments, finalized);
+    const { latestOperationsComment, requesterRepliesAfterOperations, activeDeadline } = cycle;
     const validating = isValidationComment(latestOperationsComment);
-    const responded = finalized || requesterRepliesAfterOperations.length > 0;
-    const conversationStatus = finalized
-      ? "Finalizada"
-      : validating
-        ? "En validación"
-        : !latestOperationsComment
-          ? "Sin comentario de operaciones"
-          : responded
-            ? "Respondida"
-            : "Pendiente de respuesta";
+    const status = conversationStatus(cycle, finalized, validating);
+    const responded = status === "Finalizada" || status === "Respondida";
     const attachments = uniqueAttachments([
       ...comments.flatMap((comment) => comment.attachments),
       ...apiAttachments,
@@ -553,7 +540,7 @@ async function inspectReq(page: Page, req: string): Promise<ReqResult> {
       req,
       checkedAt: new Date().toISOString(),
       responded,
-      conversationStatus,
+      conversationStatus: status,
       status: data.status,
       title: data.title,
       requester: data.requester,
@@ -561,8 +548,9 @@ async function inspectReq(page: Page, req: string): Promise<ReqResult> {
       pullRequestUrls: data.pullRequestUrls,
       detailUrl,
       latestOperationsComment,
+      activeDeadline,
       requesterRepliesAfterOperations,
-      latestResponse: responses.at(0) ?? null,
+      latestResponse: cycle.orderKnown ? cycle.orderedComments.filter((comment) => comment.isResponse).at(-1) ?? null : null,
       responses,
       comments,
       attachments,
@@ -616,6 +604,7 @@ async function main(): Promise<void> {
           pullRequestUrls: [],
           detailUrl: null,
           latestOperationsComment: null,
+          activeDeadline: null,
           requesterRepliesAfterOperations: [],
           latestResponse: null,
           responses: [],
