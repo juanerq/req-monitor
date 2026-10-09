@@ -126,6 +126,7 @@ td:last-child { text-align: right; white-space: nowrap; }
 .req-identity { display: flex; align-items: flex-start; flex-direction: column; gap: 5px; min-width: max-content; }
 .req-service { color: var(--info); font-size: .92rem; font-weight: 850; letter-spacing: -.01em; }
 .req-title { max-width: 340px; color: var(--muted); font-size: .86rem; }
+.deadline-cell { min-width: 130px; white-space: nowrap; font-size: .84rem; }
 .badge { display: inline-block; padding: 4px 8px; color: var(--muted); background: var(--bg); border: 1px solid var(--line); border-radius: 99px; font-size: .75rem; font-weight: 800; }
 .badge.pending { color: var(--danger); border-color: rgba(255, 107, 107, .35); }
 .badge.answered { color: var(--info); border-color: rgba(101, 183, 218, .35); }
@@ -204,6 +205,8 @@ code { color: var(--accent); }
   tr { padding: 14px 0; border-bottom: 1px solid var(--line); }
   td { padding: 5px 4px; border: 0; }
   td:last-child { text-align: left; }
+  .deadline-cell { white-space: normal; }
+  .deadline-cell::before { content: attr(data-label) ": "; color: var(--muted); font-weight: 700; }
   .row-actions { justify-content: flex-start; margin-top: 8px; }
   .attachment-card { grid-template-columns: 48px minmax(0, 1fr); }
   .file-action { grid-column: 2; }

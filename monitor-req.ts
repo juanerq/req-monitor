@@ -1,6 +1,7 @@
 import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
+import type { ActiveDeadline } from "./deadline.js";
 
 const PENDING_STATUS = "Pendiente de respuesta";
 const DEFAULT_REQ_FILE = process.env.REQ_FILE ?? "reqs.txt";
@@ -37,6 +38,7 @@ type ReqResult = {
   pullRequestUrls: string[];
   detailUrl: string | null;
   latestOperationsComment: Comment | null;
+  activeDeadline: ActiveDeadline | null;
   error?: string;
 };
 
@@ -47,6 +49,7 @@ type StoredState = Record<
     lastChecked: string;
     lastNotified?: string;
     latestOperationsCommentKey?: string;
+    lastReminder?: { sourceKey: string; day: string };
   }
 >;
 
@@ -206,6 +209,104 @@ function operationsCommentKey(comment: Comment | null): string | undefined {
   return [comment.author, comment.date ?? "", comment.text].join("|");
 }
 
+function colombianPublicHolidays(year: number): Set<string> {
+  const holidays = new Set<string>();
+  const date = (month: number, day: number) => new Date(Date.UTC(year, month - 1, day));
+  const add = (value: Date, moveToMonday = false) => {
+    const day = new Date(value);
+    if (moveToMonday) day.setUTCDate(day.getUTCDate() + (8 - day.getUTCDay()) % 7);
+    holidays.add(day.toISOString().slice(0, 10));
+  };
+  for (const [month, day] of [[1, 1], [5, 1], [7, 20], [8, 7], [12, 8], [12, 25]]) {
+    add(date(month, day));
+  }
+  for (const [month, day] of [[1, 6], [3, 19], [6, 29], [8, 15], [10, 12], [11, 1], [11, 11]]) {
+    add(date(month, day), true);
+  }
+  // Gregorian Easter determines Holy Week and the three moved Colombian observances.
+  const a = year % 19;
+  const b = Math.floor(year / 100);
+  const c = year % 100;
+  const d = Math.floor(b / 4);
+  const e = b % 4;
+  const f = Math.floor((b + 8) / 25);
+  const g = Math.floor((b - f + 1) / 3);
+  const h = (19 * a + b - d - g + 15) % 30;
+  const i = Math.floor(c / 4);
+  const k = c % 4;
+  const l = (32 + 2 * e + 2 * i - h - k) % 7;
+  const m = Math.floor((a + 11 * h + 22 * l) / 451);
+  const easterMonth = Math.floor((h + l - 7 * m + 114) / 31);
+  const easterDay = (h + l - 7 * m + 114) % 31 + 1;
+  const easter = date(easterMonth, easterDay);
+  for (const offset of [-3, -2, 39, 60, 68]) {
+    const observance = new Date(easter);
+    observance.setUTCDate(observance.getUTCDate() + offset);
+    add(observance, offset > 0);
+  }
+  return holidays;
+}
+
+/** Only 08:00–11:59 in Colombia qualifies; UTC dates must never control deduplication. */
+export function reminderDay(now: Date): string | null {
+  if (Number.isNaN(now.valueOf())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Bogota", year: "numeric", month: "2-digit", day: "2-digit", weekday: "short", hour: "2-digit",
+    hourCycle: "h23",
+  }).formatToParts(now);
+  const part = (name: string) => parts.find((item) => item.type === name)?.value ?? "";
+  const hour = Number(part("hour"));
+  if (hour < 8 || hour >= 12 || ["Sat", "Sun"].includes(part("weekday"))) return null;
+  const day = `${part("year")}-${part("month")}-${part("day")}`;
+  return colombianPublicHolidays(Number(part("year"))).has(day) ? null : day;
+}
+
+type ReqState = StoredState[string];
+
+/** Send one alert at most per run; only accepted deliveries advance deduplication state. */
+export async function processReqResult(
+  result: ReqResult,
+  previous: ReqState | undefined,
+  now: Date,
+  dryRun: boolean,
+  send: (message: string, actionUrl: string, pullRequestUrls: string[]) => Promise<void>,
+): Promise<ReqState> {
+  const currentCommentKey = operationsCommentKey(result.latestOperationsComment);
+  const pendingAlert = result.conversationStatus === PENDING_STATUS &&
+    (previous?.conversationStatus !== PENDING_STATUS || previous?.latestOperationsCommentKey !== currentCommentKey);
+  const finalizedAlert = result.conversationStatus === "Finalizada" &&
+    (previous?.conversationStatus !== "Finalizada" || !previous?.lastNotified);
+  const day = reminderDay(now);
+  const deadline = result.activeDeadline;
+  const awaitingDeadline = result.conversationStatus === PENDING_STATUS && deadline && day;
+  const reminder = !pendingAlert && !finalizedAlert && awaitingDeadline &&
+    (previous?.lastReminder?.sourceKey !== deadline.sourceKey || previous?.lastReminder?.day !== day);
+  const next: ReqState = {
+    conversationStatus: result.conversationStatus,
+    lastChecked: result.checkedAt,
+    ...(previous?.lastNotified ? { lastNotified: previous.lastNotified } : {}),
+    ...(currentCommentKey ? { latestOperationsCommentKey: currentCommentKey } : {}),
+    ...(previous?.lastReminder ? { lastReminder: previous.lastReminder } : {}),
+  };
+
+  if (pendingAlert || finalizedAlert || reminder) {
+    const message = reminder && deadline
+      ? trimToTeamsLimit(`Recordatorio: REQ pendiente de respuesta: ${result.req}\nPlazo indicado: ${new Intl.DateTimeFormat("es-CO", {
+        timeZone: "America/Bogota", dateStyle: "short", timeStyle: "short",
+      }).format(new Date(deadline.dueAt))}\nAbrir REQ: ${result.detailUrl ?? PORTAL_URL}`)
+      : buildNotification(result);
+    await send(message, result.detailUrl ?? PORTAL_URL, result.pullRequestUrls);
+    if (!dryRun) {
+      next.lastNotified = now.toISOString();
+      if (awaitingDeadline && deadline && day) next.lastReminder = { sourceKey: deadline.sourceKey, day };
+    }
+    console.log(`${result.req}: ${reminder ? "recordatorio" : "alerta"} ${dryRun ? "simulada" : "enviada"}`);
+  } else {
+    console.log(`${result.req}: ${result.conversationStatus}, sin alerta nueva`);
+  }
+  return next;
+}
+
 function buildTeamsPayload(
   message: string,
   actionUrl: string,
@@ -362,52 +463,22 @@ async function main(): Promise<void> {
       continue;
     }
 
-    const currentCommentKey = operationsCommentKey(result.latestOperationsComment);
-    const pendingAlert =
-      result.conversationStatus === PENDING_STATUS &&
-      (previous[result.req]?.conversationStatus !== PENDING_STATUS ||
-        previous[result.req]?.latestOperationsCommentKey !== currentCommentKey);
-    const finalizedAlert =
-      result.conversationStatus === "Finalizada" &&
-      (previous[result.req]?.conversationStatus !== "Finalizada" ||
-        !previous[result.req]?.lastNotified);
-    const needsAlert = pendingAlert || finalizedAlert;
-    let notifiedAt = previous[result.req]?.lastNotified;
-
-    if (needsAlert) {
-      try {
-        await postToTeams(
-          buildNotification(result),
-          options.dryRun,
-          result.detailUrl ?? PORTAL_URL,
-          result.pullRequestUrls,
-        );
-        notifiedAt = new Date().toISOString();
-        console.log(`${result.req}: alerta ${options.dryRun ? "simulada" : "enviada"}`);
-      } catch (error) {
-        failed = true;
-        console.error(
-          `${result.req}: ${error instanceof Error ? error.message : String(error)}`,
-        );
-        continue;
-      }
-    } else {
-      console.log(`${result.req}: ${result.conversationStatus}, sin alerta nueva`);
+    try {
+      next[result.req] = await processReqResult(result, previous[result.req], new Date(), options.dryRun,
+        (message, actionUrl, urls) => postToTeams(message, options.dryRun, actionUrl, urls));
+    } catch (error) {
+      failed = true;
+      console.error(`${result.req}: ${error instanceof Error ? error.message : String(error)}`);
     }
-
-    next[result.req] = {
-      conversationStatus: result.conversationStatus,
-      lastChecked: result.checkedAt,
-      ...(notifiedAt ? { lastNotified: notifiedAt } : {}),
-      ...(currentCommentKey ? { latestOperationsCommentKey: currentCommentKey } : {}),
-    };
   }
 
   if (!options.dryRun) saveState(options.state, next);
   if (failed) process.exitCode = 1;
 }
 
-main().catch((error: unknown) => {
-  console.error(error instanceof Error ? error.message : error);
-  process.exitCode = 1;
-});
+if (process.argv[1] && path.basename(process.argv[1]) === "monitor-req.ts") {
+  main().catch((error: unknown) => {
+    console.error(error instanceof Error ? error.message : error);
+    process.exitCode = 1;
+  });
+}

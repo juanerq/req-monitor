@@ -47,6 +47,18 @@ function formatDate(value) {
   return Number.isNaN(date.valueOf()) ? value : date.toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" });
 }
 
+function statedDeadline(result) {
+  if (result && result.conversationStatus !== "Pendiente de respuesta" && result.conversationStatus !== "En validación") {
+    return "Plazo inactivo";
+  }
+  const dueAt = result?.activeDeadline?.dueAt;
+  if (!dueAt || Number.isNaN(new Date(dueAt).valueOf())) return "Sin plazo indicado";
+  return new Intl.DateTimeFormat("es-CO", {
+    timeZone: "America/Bogota", day: "numeric", month: "numeric", year: "numeric",
+    hour: "numeric", minute: "2-digit", hourCycle: "h12",
+  }).format(new Date(dueAt));
+}
+
 function normalizeReq(value) {
   return value.trim().toUpperCase();
 }
@@ -132,6 +144,7 @@ function renderRows(reqs, results) {
     return `<tr>
       <td><div class="req-identity"><span class="req-service">${escapeHtml(microservices)}</span>${reqLink}</div></td>
       <td><span class="badge ${statusClass(status)}">${escapeHtml(status)}</span></td>
+      <td class="deadline-cell" data-label="Plazo indicado">${escapeHtml(statedDeadline(result))}</td>
       <td><div class="req-title">${escapeHtml(detail)}</div></td>
       <td>${escapeHtml(formatDate(result?.checkedAt))}</td>
       <td><div class="row-actions">
