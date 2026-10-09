@@ -53,9 +53,9 @@ El estado original del portal se conserva en `status`. El estado calculado se en
 
 Cada resultado incluye estado, solicitante, comentarios, respuestas de agentes, respuesta más reciente y adjuntos. Algunos enlaces de descarga son temporales o requieren la sesión autenticada.
 
-## Notificaciones en Microsoft Teams
+## Notificaciones opcionales en Microsoft Teams
 
-Regenera cualquier webhook que hayas compartido y configura la nueva URL solo como variable de entorno:
+Sin `TEAMS_WEBHOOK_URL`, el monitor consulta y guarda resultados normalmente, pero no envía alertas a Teams. Para activar las alertas, configura un webhook válido como variable de entorno; si compartiste uno antes, regenéralo:
 
 ```bash
 export TEAMS_WEBHOOK_URL="https://..."
@@ -67,7 +67,7 @@ También puedes crear un `.env` local, ignorado por Git:
 TEAMS_WEBHOOK_URL=https://...
 ```
 
-Copia `reqs.txt.example` como `reqs.txt` y agrega una REQ por línea. Ejecuta el monitor:
+Para usar el monitor desde la terminal, crea `reqs.txt` con una REQ por línea (como en «Consultar varias REQ»). En Docker puedes agregarlas desde la interfaz web, sin preparar ese archivo. Ejecuta el monitor local:
 
 ```bash
 pnpm monitor-req
@@ -83,7 +83,7 @@ Prueba sin enviar ni modificar estado:
 pnpm monitor-req --dry-run
 ```
 
-Prueba solamente el webhook:
+Prueba solamente el webhook (requiere `TEAMS_WEBHOOK_URL`):
 
 ```bash
 pnpm monitor-req --test-notification
@@ -172,21 +172,22 @@ curl -X POST http://127.0.0.1:8787/api/reqs/query \
 
 ## Docker Compose
 
-El contenedor ejecuta API y scheduler interno. No necesita cron dentro del contenedor.
+El contenedor ejecuta API y scheduler interno. No necesita cron dentro del contenedor ni un archivo `.env` para iniciar sin alertas de Teams.
 
 ```bash
-docker compose build
-docker compose up -d
+docker compose up -d --build
 docker compose ps
 ```
+
+Abre `http://127.0.0.1:8787` y agrega las REQ a monitorear desde la interfaz; no necesitas `reqs.txt.example`. Para activar Teams, crea un `.env` local con `TEAMS_WEBHOOK_URL=https://...` antes de iniciar el contenedor. Si el webhook falta, Teams queda desactivado, pero el monitoreo, el dashboard y el guardado de resultados siguen funcionando. Las variables de `.env` se cargan si el archivo existe.
 
 Configuración predeterminada:
 
 - Consulta cada 15 minutos dentro de ventanas laborales de Colombia, excluyendo fines de semana y festivos.
 - API publicada solo en `127.0.0.1:8787` del servidor.
-- REQ persistidas en `runtime/reqs.txt`.
-- Estado y logs persistidos en `artifacts/`.
-- Sesión Playwright montada desde `playwright/.auth/` con escritura para renovarla desde interfaz.
+- `./runtime` montado en `/data`: REQ persistidas en `runtime/reqs.txt`.
+- `./artifacts` montado en `/app/artifacts`: resultados y estado persistidos.
+- `./playwright/.auth` montado en `/app/playwright/.auth`: sesión Playwright persistida con escritura para renovarla desde la interfaz.
 
 Comandos operativos:
 
@@ -196,4 +197,4 @@ docker compose restart monitor
 docker compose down
 ```
 
-Si sesión expira, usa botón `Acceso` en interfaz. Usuario y contraseña solo se usan durante login; se persiste únicamente sesión Playwright en `playwright/.auth/miasistencia.json`.
+Si la sesión expira, usa el botón `Acceso` en la interfaz web para renovarla. Usuario y contraseña solo se usan durante el inicio de sesión; se persiste únicamente la sesión Playwright en `playwright/.auth/miasistencia.json`.

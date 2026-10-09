@@ -8,7 +8,8 @@ services:
     init: true
     ipc: host
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       MONITOR_API_HOST: 0.0.0.0
       MONITOR_API_PORT: 8787
