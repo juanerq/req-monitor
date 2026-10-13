@@ -57,10 +57,11 @@ function dashboardHarness() {
   const button = { dataset: { details: "0" }, ariaExpanded: "false", setAttribute(name: string, value: string) { if (name === "aria-expanded") this.ariaExpanded = value; } };
   const list = { innerHTML: "", querySelector: (_selector: string) => panel };
   const empty = { hidden: false };
-  const document = { querySelector: (selector: string) => selector === "#req-list" ? list : selector === "#empty-state" ? empty : {} };
+  const query = { innerHTML: "", hidden: true, scrollIntoView() {} };
+  const document = { querySelector: (selector: string) => selector === "#req-list" ? list : selector === "#empty-state" ? empty : selector === "#query-result" ? query : {} };
   const context = vm.createContext({ document, URL, console });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
-  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails;`, context);
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails; this.renderQueryResultForTest = renderQueryResult;`, context);
   const render = (result: object) => {
     panel.hidden = true;
     cell.innerHTML = "";
@@ -68,7 +69,9 @@ function dashboardHarness() {
       .renderRowsForTest(["REQ123"], [{ req: "REQ123", ...result }]);
   };
   const toggle = () => (context as { toggleDetailsForTest: (button: object) => void }).toggleDetailsForTest(button);
-  return { html, list, panel, cell, button, render, toggle };
+  const renderQuery = (result: object) => (context as { renderQueryResultForTest: (result: object) => void })
+    .renderQueryResultForTest({ req: "REQ123", ...result });
+  return { html, list, panel, cell, button, render, toggle, query, renderQuery };
 }
 
 test("portal status is literal, independent of conversation status and unavailable when absent", () => {
@@ -120,4 +123,49 @@ test("missing values stay unavailable and stored text and links cannot inject ma
   assert.match(ui.cell.innerHTML, /&lt;script&gt;/);
   assert.doesNotMatch(ui.cell.innerHTML, /<script|onfocus="alert/);
   assert.match(ui.cell.innerHTML, /No disponible/);
+});
+
+test("observed project appears beside microservice and REQ and in accessible stored details", () => {
+  const ui = dashboardHarness();
+  assert.match(ui.html, /Proyecto.*Microservicio.*REQ/);
+  ui.render({ projectName: "Proyecto Sintético", microservices: ["servicio-demo"] });
+  assert.match(ui.list.innerHTML, /Proyecto Sintético/);
+  assert.match(ui.list.innerHTML, /servicio-demo/);
+  assert.match(ui.list.innerHTML, /REQ123/);
+  ui.toggle();
+  assert.match(ui.cell.innerHTML, /<dt>Proyecto<\/dt><dd>Proyecto Sintético<\/dd>/);
+  assert.equal(ui.button.ariaExpanded, "true");
+});
+
+test("missing or blank project is explicitly unavailable in row, details and manual query", () => {
+  const ui = dashboardHarness();
+  for (const projectName of [null, "  "]) {
+    ui.render({ projectName });
+    assert.match(ui.list.innerHTML, /Proyecto no disponible/);
+    ui.toggle();
+    assert.match(ui.cell.innerHTML, /<dt>Proyecto<\/dt><dd>No disponible<\/dd>/);
+    ui.renderQuery({ projectName });
+    assert.match(ui.query.innerHTML, /<dt>Proyecto<\/dt><dd>Proyecto no disponible<\/dd>/);
+  }
+});
+
+test("project markup is escaped in row, stored details and manual query", () => {
+  const ui = dashboardHarness();
+  const projectName = '<script>alert("demo")</script>';
+  ui.render({ projectName });
+  assert.match(ui.list.innerHTML, /&lt;script&gt;/);
+  assert.doesNotMatch(ui.list.innerHTML, /<script>/);
+  ui.toggle();
+  assert.match(ui.cell.innerHTML, /&lt;script&gt;/);
+  assert.doesNotMatch(ui.cell.innerHTML, /<script>/);
+  ui.renderQuery({ projectName });
+  assert.match(ui.query.innerHTML, /&lt;script&gt;/);
+  assert.doesNotMatch(ui.query.innerHTML, /<script>/);
+});
+
+test("manual query shows observed project beside existing microservices", () => {
+  const ui = dashboardHarness();
+  ui.renderQuery({ projectName: "Proyecto Prueba", microservices: ["servicio-demo"] });
+  assert.match(ui.query.innerHTML, /<dt>Proyecto<\/dt><dd>Proyecto Prueba<\/dd>/);
+  assert.match(ui.query.innerHTML, /<dt>Microservicios<\/dt><dd>servicio-demo<\/dd>/);
 });

@@ -124,7 +124,8 @@ td { padding: 16px 10px; vertical-align: top; border-bottom: 1px solid var(--lin
 td:last-child { text-align: right; white-space: nowrap; }
 .req-number { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; font-weight: 650; text-decoration: none; }
 .req-number:hover { color: var(--text); }
-.req-identity { display: flex; align-items: flex-start; flex-direction: column; gap: 5px; min-width: max-content; }
+.req-identity { display: flex; align-items: flex-start; flex-direction: column; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
+.req-project { color: var(--text); font-size: .92rem; font-weight: 850; }
 .req-service { color: var(--info); font-size: .92rem; font-weight: 850; letter-spacing: -.01em; }
 .req-title { max-width: 340px; color: var(--muted); font-size: .86rem; }
 .deadline-cell { min-width: 130px; white-space: nowrap; font-size: .84rem; }

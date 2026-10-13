@@ -141,9 +141,10 @@ function renderRows(reqs, results) {
       ? `<a class="req-number" href="${safeUrl(result.detailUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(req)}</a>`
       : `<span class="req-number">${escapeHtml(req)}</span>`;
     const microservices = Array.isArray(result?.microservices) ? result.microservices.filter(Boolean).join(", ") : "";
+    const project = result?.projectName?.trim() ? result.projectName : "Proyecto no disponible";
     const detail = result?.error || result?.title || "Información no disponible";
     return `<tr>
-      <td><div class="req-identity">${microservices ? `<span class="req-service">${escapeHtml(microservices)}</span>` : ""}${reqLink}</div></td>
+      <td><div class="req-identity"><span class="req-project">${escapeHtml(project)}</span>${microservices ? `<span class="req-service">${escapeHtml(microservices)}</span>` : ""}${reqLink}</div></td>
       <td><span class="badge">${escapeHtml(status)}</span></td>
       <td class="deadline-cell" data-label="Plazo indicado">${escapeHtml(statedDeadline(result))}</td>
       <td><div class="req-title">${escapeHtml(detail)}</div></td>
@@ -167,6 +168,7 @@ function renderStoredDetails(result) {
     ["Estado del portal", result?.status],
     ["Estado de conversación (calculado)", result?.conversationStatus],
     ["Título", result?.title],
+    ["Proyecto", result?.projectName],
     ["Microservicios detectados", result?.microservices?.length ? result.microservices.join(", ") : null],
     ["Tipo de operación", result?.requestDetails?.operationType],
     ["Aplicación", result?.requestDetails?.application],
@@ -268,6 +270,7 @@ function renderQueryResult(result) {
         <div><dt>Estado del portal</dt><dd>${escapeHtml(result.status?.trim() ? result.status : "Estado no disponible")}</dd></div>
         <div><dt>Consultada</dt><dd>${escapeHtml(formatDate(result.checkedAt))}</dd></div>
         <div><dt>Título</dt><dd>${escapeHtml(result.title || "Sin título")}</dd></div>
+        <div><dt>Proyecto</dt><dd>${escapeHtml(result.projectName?.trim() ? result.projectName : "Proyecto no disponible")}</dd></div>
         <div><dt>Microservicios</dt><dd>${escapeHtml((result.microservices || []).join(", ") || "No disponibles")}</dd></div>
         <div><dt>Operaciones</dt><dd>${escapeHtml(comment?.author || "Sin comentario")}</dd></div>
       </dl>

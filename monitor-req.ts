@@ -195,6 +195,7 @@ function buildNotification(result: ReqResult): string {
         ? `REQ finalizada: ${result.req}`
         : `REQ pendiente de respuesta: ${result.req}`,
       result.title ? `Título: ${result.title}` : null,
+      result.projectName?.trim() ? `Proyecto: ${result.projectName}` : null,
       result.microservices.length > 0
         ? `${result.microservices.length === 1 ? "Microservicio" : "Microservicios"}: ${result.microservices.join(", ")}`
         : null,
