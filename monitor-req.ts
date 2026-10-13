@@ -270,10 +270,11 @@ export async function processReqResult(
   now: Date,
   dryRun: boolean,
   send: (message: string, actionUrl: string, pullRequestUrls: string[]) => Promise<void>,
+  notificationsEnabled = true,
 ): Promise<ReqState> {
   const currentCommentKey = operationsCommentKey(result.latestOperationsComment);
   const pendingAlert = result.conversationStatus === PENDING_STATUS &&
-    (previous?.conversationStatus !== PENDING_STATUS || previous?.latestOperationsCommentKey !== currentCommentKey);
+    (previous?.conversationStatus !== PENDING_STATUS || previous?.latestOperationsCommentKey !== currentCommentKey || !previous?.lastNotified);
   const finalizedAlert = result.conversationStatus === "Finalizada" &&
     (previous?.conversationStatus !== "Finalizada" || !previous?.lastNotified);
   const day = reminderDay(now);
@@ -288,6 +289,12 @@ export async function processReqResult(
     ...(currentCommentKey ? { latestOperationsCommentKey: currentCommentKey } : {}),
     ...(previous?.lastReminder ? { lastReminder: previous.lastReminder } : {}),
   };
+
+  if (!notificationsEnabled && !dryRun) {
+    if (pendingAlert || finalizedAlert) delete next.lastNotified;
+    console.log(`${result.req}: ${result.conversationStatus}, notificaciones desactivadas`);
+    return next;
+  }
 
   if (pendingAlert || finalizedAlert || reminder) {
     const message = reminder && deadline
@@ -399,9 +406,9 @@ async function postToTeams(
     return;
   }
 
-  const webhook = process.env.TEAMS_WEBHOOK_URL;
+  const webhook = process.env.TEAMS_WEBHOOK_URL?.trim();
   if (!webhook) {
-    throw new Error("Falta TEAMS_WEBHOOK_URL");
+    throw new Error("Falta TEAMS_WEBHOOK_URL; configúralo para usar --test-notification");
   }
   let url: URL;
   try {
@@ -465,7 +472,8 @@ async function main(): Promise<void> {
 
     try {
       next[result.req] = await processReqResult(result, previous[result.req], new Date(), options.dryRun,
-        (message, actionUrl, urls) => postToTeams(message, options.dryRun, actionUrl, urls));
+        (message, actionUrl, urls) => postToTeams(message, options.dryRun, actionUrl, urls),
+        options.dryRun || Boolean(process.env.TEAMS_WEBHOOK_URL?.trim()));
     } catch (error) {
       failed = true;
       console.error(`${result.req}: ${error instanceof Error ? error.message : String(error)}`);

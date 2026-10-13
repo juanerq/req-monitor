@@ -4,8 +4,9 @@ import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
 import Holidays from "date-holidays";
 import { chromium } from "playwright";
+import { authFilePath, loadAuthEnvironment, localAuthStatus, saveAuthSession, validateUsername } from "./auth-session.js";
 
-if (fs.existsSync(".env")) process.loadEnvFile(".env");
+loadAuthEnvironment();
 
 const HOST = process.env.MONITOR_API_HOST ?? "127.0.0.1";
 const PORT = Number(process.env.MONITOR_API_PORT ?? "8787");
@@ -18,9 +19,7 @@ const SETTINGS_FILE = path.resolve(
   process.env.MONITOR_SETTINGS_FILE ?? path.join(path.dirname(REQ_FILE), "settings.json"),
 );
 const LEGACY_API_TOKEN_FILE = path.join(path.dirname(REQ_FILE), "api-token");
-const AUTH_FILE = path.resolve(
-  process.env.AUTH_FILE ?? "playwright/.auth/miasistencia.json",
-);
+const AUTH_FILE = authFilePath();
 const APP_URL = process.env.APP_URL ??
   "https://miasistencia360-dwp.claro.com.co/dwp/app/#/catalog";
 const PORTAL_ORIGIN = new URL(APP_URL).origin;
@@ -255,7 +254,7 @@ function validateAttachmentUrl(value: unknown): URL {
 async function downloadAttachment(value: unknown, response: ServerResponse): Promise<void> {
   const url = validateAttachmentUrl(value);
   if (!fs.existsSync(AUTH_FILE)) {
-    throw new Error("No existe sesión MiAsistencia360; ejecuta pnpm run auth");
+    throw new Error("No existe sesión MiAsistencia360; usa Acceso");
   }
 
   const browser = await chromium.launch({ headless: true });
@@ -272,19 +271,19 @@ async function downloadAttachment(value: unknown, response: ServerResponse): Pro
         page.url().includes("-rsso.") ||
         await page.locator('input[type="password"]:visible').count() > 0
       ) {
-        throw new Error("Sesión MiAsistencia360 expirada; ejecuta pnpm run auth");
+        throw new Error("Sesión MiAsistencia360 expirada; usa Acceso");
       }
       await page.waitForTimeout(500);
       upstream = await context.request.get(url.href, { failOnStatusCode: false });
     }
     if (upstream.status() === 401) {
-      throw new Error("Sesión MiAsistencia360 expirada; ejecuta pnpm run auth");
+      throw new Error("Sesión MiAsistencia360 expirada; usa Acceso");
     }
     const contentType = upstream.headers()["content-type"] ?? "application/octet-stream";
     const contentLength = Number(upstream.headers()["content-length"] ?? "0");
     const returnedToSso = new URL(upstream.url()).origin !== PORTAL_ORIGIN;
     if (returnedToSso || contentType.includes("text/html")) {
-      throw new Error("Sesión MiAsistencia360 expirada; ejecuta pnpm run auth");
+      throw new Error("Sesión MiAsistencia360 expirada; usa Acceso");
     }
     if (!upstream.ok()) {
       throw new Error(`MiAsistencia360 respondió HTTP ${upstream.status()}`);
@@ -300,7 +299,7 @@ async function downloadAttachment(value: unknown, response: ServerResponse): Pro
       body.length < 4_096 &&
       body.toString("utf8").includes("MOBILITY_ERROR_SESSION_EXPIRED")
     ) {
-      throw new Error("Sesión MiAsistencia360 expirada; ejecuta pnpm run auth");
+      throw new Error("Sesión MiAsistencia360 expirada; usa Acceso");
     }
     response.writeHead(200, {
       "Content-Type": contentType,
@@ -320,6 +319,11 @@ async function renewPortalSession(usernameValue: unknown, passwordValue: unknown
   const password = typeof passwordValue === "string" ? passwordValue : "";
   if (!username || !password) throw new Error("Usuario y contraseña son obligatorios");
   if (username.length > 256 || password.length > 1_024) {
+    throw new Error("Credenciales inválidas");
+  }
+  try {
+    validateUsername(username);
+  } catch {
     throw new Error("Credenciales inválidas");
   }
   if (child || activeTask) throw new Error("Monitor ocupado; intenta nuevamente al finalizar");
@@ -351,8 +355,7 @@ async function renewPortalSession(usernameValue: unknown, passwordValue: unknown
     if (page.url().includes("-rsso.") || await passwordInput.isVisible().catch(() => false)) {
       throw new Error("No fue posible iniciar sesión; verifica usuario y contraseña");
     }
-    fs.mkdirSync(path.dirname(AUTH_FILE), { recursive: true });
-    await context.storageState({ path: AUTH_FILE });
+    await saveAuthSession(context, username, AUTH_FILE);
   } finally {
     await browser.close().catch(() => undefined);
     activeTask = null;
@@ -494,6 +497,10 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     json(response, 200, { localOnly: true });
     return;
   }
+  if (request.method === "GET" && url.pathname === "/api/auth/status") {
+    json(response, 200, localAuthStatus(AUTH_FILE));
+    return;
+  }
 
   if (request.method === "GET" && url.pathname === "/api/reqs") {
     json(response, 200, { reqs: readReqs() });
@@ -511,6 +518,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
         intervalMinutes: INTERVAL_MINUTES,
       },
       settings: { teamsWebhook: webhookStatus() },
+      auth: localAuthStatus(AUTH_FILE),
     });
     return;
   }

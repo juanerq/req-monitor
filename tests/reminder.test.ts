@@ -73,6 +73,69 @@ test("failed delivery is retryable; dry runs never mark reminder delivered", asy
   assert.deepEqual(sent.lastReminder, { sourceKey: due.sourceKey, day: "2026-10-09" });
 });
 
+test("disabled delivery persists pending observation and alerts once when enabled", async () => {
+  const now = new Date("2026-10-09T13:15:00Z");
+  const sent: string[] = [];
+  const send = async (message: string) => { sent.push(message); };
+  const disabled = await processReqResult(result, undefined, now, false, send, false);
+  assert.equal(sent.length, 0);
+  assert.equal(disabled.conversationStatus, result.conversationStatus);
+  assert.equal(disabled.latestOperationsCommentKey, "Operations|9 oct 2026, 08:00|Before 09/10/2026");
+  assert.equal(disabled.lastNotified, undefined);
+  assert.equal(disabled.lastReminder, undefined);
+  const unchanged = await processReqResult(result, disabled, now, false, send, false);
+  assert.equal(sent.length, 0);
+  const enabled = await processReqResult(result, unchanged, now, false, send);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /REQ pendiente de respuesta/);
+  assert.deepEqual(enabled.lastReminder, { sourceKey: due.sourceKey, day: "2026-10-09" });
+  await processReqResult(result, enabled, now, false, send);
+  assert.equal(sent.length, 1);
+});
+
+test("disabled changed pending comment clears old delivery; failed reenable remains retryable", async () => {
+  const now = new Date("2026-10-09T19:00:00Z");
+  const previous = { conversationStatus: result.conversationStatus, lastChecked: result.checkedAt,
+    lastNotified: result.checkedAt, latestOperationsCommentKey: "old comment" };
+  const disabled = await processReqResult(result, previous, now, false, async () => {
+    throw Error("send should not run");
+  }, false);
+  assert.equal(disabled.lastNotified, undefined);
+  await assert.rejects(processReqResult(result, disabled, now, false, async () => {
+    throw Error("Teams unavailable");
+  }), /Teams unavailable/);
+  const sent: string[] = [];
+  const delivered = await processReqResult(result, disabled, now, false, async (message) => { sent.push(message); });
+  assert.equal(sent.length, 1);
+  assert.equal(delivered.lastNotified, now.toISOString());
+});
+
+test("disabled finalized status sends once when webhook becomes available", async () => {
+  const finalized = { ...result, conversationStatus: "Finalizada" as const, activeDeadline: null };
+  const now = new Date("2026-10-09T19:00:00Z");
+  const disabled = await processReqResult(finalized, undefined, now, false, async () => {
+    throw Error("send should not run");
+  }, false);
+  assert.equal(disabled.lastNotified, undefined);
+  const sent: string[] = [];
+  const send = async (message: string) => { sent.push(message); };
+  const enabled = await processReqResult(finalized, disabled, now, false, send);
+  assert.match(sent[0], /REQ finalizada/);
+  await processReqResult(finalized, enabled, now, false, send);
+  assert.equal(sent.length, 1);
+});
+
+test("dry run simulates pending alert without webhook and leaves it retryable", async () => {
+  const now = new Date("2026-10-09T13:15:00Z");
+  const sent: string[] = [];
+  const simulated = await processReqResult(result, undefined, now, true, async (message) => {
+    sent.push(message);
+  }, true);
+  assert.equal(sent.length, 1);
+  assert.equal(simulated.lastNotified, undefined);
+  assert.equal(simulated.lastReminder, undefined);
+});
+
 test("weekends and Colombian public holidays suppress reminders, not pending or finalized alerts", async () => {
   const previous = { conversationStatus: result.conversationStatus, lastChecked: result.checkedAt,
     lastNotified: result.checkedAt, latestOperationsCommentKey: "Operations|9 oct 2026, 08:00|Before 09/10/2026" };

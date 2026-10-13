@@ -4,11 +4,13 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { conversationStatus, deriveCommentCycle, type ActiveDeadline } from "./deadline.js";
+import { authFilePath, loadAuthEnvironment, saveAuthSession } from "./auth-session.js";
 
+loadAuthEnvironment();
 const APP_URL =
   process.env.APP_URL ??
   "https://miasistencia360-dwp.claro.com.co/dwp/app/#/catalog";
-const AUTH_FILE = "playwright/.auth/miasistencia.json";
+const AUTH_FILE = authFilePath();
 const DEFAULT_OUTPUT = "artifacts/req-responses.json";
 const REQ_PATTERN = /^REQ\d+$/i;
 
@@ -157,19 +159,22 @@ async function renewLogin(context: BrowserContext): Promise<void> {
   await page.goto(APP_URL, { waitUntil: "domcontentloaded", timeout: 60_000 });
   console.log("Inicia sesión en el navegador y vuelve a esta terminal.");
   const terminal = readline.createInterface({ input: stdin, output: stdout });
-  await terminal.question("Cuando veas el catálogo, presiona Enter...");
-  terminal.close();
-
-  if (await isLoginPage(page)) {
-    throw new Error("La sesión no se completó; la pantalla de acceso sigue visible");
+  try {
+    await terminal.question("Cuando veas el catálogo, presiona Enter...");
+    if (await isLoginPage(page)) {
+      throw new Error("La sesión no se completó; la pantalla de acceso sigue visible");
+    }
+    const username = await terminal.question("Usuario para recordar (no verificado por el portal): ");
+    await saveAuthSession(context, username, AUTH_FILE);
+  } finally {
+    terminal.close();
   }
-  await context.storageState({ path: AUTH_FILE });
-  console.log(`Sesión guardada en ${AUTH_FILE}`);
+  console.log("Sesión guardada");
 }
 
 async function assertAuthenticated(page: Page): Promise<void> {
   if (await isLoginPage(page)) {
-    throw new Error("La sesión expiró. Ejecuta: pnpm run auth");
+    throw new Error("La sesión expiró.");
   }
 }
 

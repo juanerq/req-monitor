@@ -14,7 +14,7 @@ Automatización Playwright para consultar REQ, detectar respuestas de agentes y 
 pnpm run auth
 ```
 
-Inicia sesión en el navegador. Cuando aparezca el catálogo, vuelve a la terminal y presiona Enter. La sesión se guarda en `playwright/.auth/miasistencia.json`; nunca agregues ese archivo a Git.
+Inicia sesión en el navegador. Cuando aparezca el catálogo, vuelve a la terminal y presiona Enter. La sesión se guarda en `AUTH_FILE` (por defecto `playwright/.auth/miasistencia.json`) y, cuando se proporciona, el usuario ingresado se guarda como etiqueta local en `username.json`, dentro de la misma carpeta privada. Nunca agregues estos archivos a Git. El nombre guardado no verifica la identidad del portal.
 
 ## Consultar una REQ
 
@@ -53,9 +53,9 @@ El estado original del portal se conserva en `status`. El estado calculado se en
 
 Cada resultado incluye estado, solicitante, comentarios, respuestas de agentes, respuesta más reciente y adjuntos. Algunos enlaces de descarga son temporales o requieren la sesión autenticada.
 
-## Notificaciones en Microsoft Teams
+## Notificaciones opcionales en Microsoft Teams
 
-Regenera cualquier webhook que hayas compartido y configura la nueva URL solo como variable de entorno:
+Sin `TEAMS_WEBHOOK_URL`, el monitor consulta y guarda resultados normalmente, pero no envía alertas a Teams. Para activar las alertas, configura un webhook válido como variable de entorno; si compartiste uno antes, regenéralo:
 
 ```bash
 export TEAMS_WEBHOOK_URL="https://..."
@@ -67,7 +67,7 @@ También puedes crear un `.env` local, ignorado por Git:
 TEAMS_WEBHOOK_URL=https://...
 ```
 
-Copia `reqs.txt.example` como `reqs.txt` y agrega una REQ por línea. Ejecuta el monitor:
+Para usar el monitor desde la terminal, crea `reqs.txt` con una REQ por línea (como en «Consultar varias REQ»). En Docker puedes agregarlas desde la interfaz web, sin preparar ese archivo. Ejecuta el monitor local:
 
 ```bash
 pnpm monitor-req
@@ -83,7 +83,7 @@ Prueba sin enviar ni modificar estado:
 pnpm monitor-req --dry-run
 ```
 
-Prueba solamente el webhook:
+Prueba solamente el webhook (requiere `TEAMS_WEBHOOK_URL`):
 
 ```bash
 pnpm monitor-req --test-notification
@@ -160,7 +160,8 @@ Con API activa, abre `http://127.0.0.1:8787`. La interfaz permite:
 - Ejecutar monitor completo bajo demanda.
 - Consultar una REQ específica sin agregarla al monitoreo ni enviar alertas a Teams.
 - Descargar adjuntos mediante sesión autenticada del backend, sin abrir enlaces REST expirados.
-- Renovar sesión MiAsistencia360 desde botón discreto `Acceso`; credenciales no se guardan.
+- Consultar desde `Acceso` si existe una sesión local y ver el usuario ingresado anteriormente, sin exponer contraseña ni cookies. Su presencia no confirma que el portal permita el acceso; `GET /api/auth/status` devuelve únicamente `localSessionAvailable` y `username`.
+- Iniciar sesión manualmente desde `Acceso` cuando el portal solicite nuevamente la contraseña. La contraseña se borra del formulario después del intento o al cerrarlo; no se guarda.
 
 Consulta manual equivalente por API:
 
@@ -172,21 +173,22 @@ curl -X POST http://127.0.0.1:8787/api/reqs/query \
 
 ## Docker Compose
 
-El contenedor ejecuta API y scheduler interno. No necesita cron dentro del contenedor.
+El contenedor ejecuta API y scheduler interno. No necesita cron dentro del contenedor ni un archivo `.env` para iniciar sin alertas de Teams.
 
 ```bash
-docker compose build
-docker compose up -d
+docker compose up -d --build
 docker compose ps
 ```
+
+Abre `http://127.0.0.1:8787` y agrega las REQ a monitorear desde la interfaz; no necesitas `reqs.txt.example`. Para activar Teams, crea un `.env` local con `TEAMS_WEBHOOK_URL=https://...` antes de iniciar el contenedor. Si el webhook falta, Teams queda desactivado, pero el monitoreo, el dashboard y el guardado de resultados siguen funcionando. Las variables de `.env` se cargan si el archivo existe.
 
 Configuración predeterminada:
 
 - Consulta cada 15 minutos dentro de ventanas laborales de Colombia, excluyendo fines de semana y festivos.
 - API publicada solo en `127.0.0.1:8787` del servidor.
-- REQ persistidas en `runtime/reqs.txt`.
-- Estado y logs persistidos en `artifacts/`.
-- Sesión Playwright montada desde `playwright/.auth/` con escritura para renovarla desde interfaz.
+- `./runtime` montado en `/data`: REQ persistidas en `runtime/reqs.txt`.
+- `./artifacts` montado en `/app/artifacts`: resultados y estado persistidos.
+- `./playwright/.auth` montado en `/app/playwright/.auth`: sesión Playwright persistida con escritura para renovarla desde la interfaz.
 
 Comandos operativos:
 
@@ -196,4 +198,4 @@ docker compose restart monitor
 docker compose down
 ```
 
-Si sesión expira, usa botón `Acceso` en interfaz. Usuario y contraseña solo se usan durante login; se persiste únicamente sesión Playwright en `playwright/.auth/miasistencia.json`.
+El monitor intenta reutilizar el estado local primero; un archivo presente no garantiza una sesión vigente ni implica renovación automática. Si el portal exige iniciar sesión, usa `Acceso` y proporciona la contraseña manualmente. Los errores de red no demuestran que la sesión haya expirado. La sesión Playwright y la etiqueta de usuario ingresado persisten en el volumen `playwright/.auth`; la contraseña no. La API no tiene autenticación propia: mantenla exclusivamente en el loopback local y protege el directorio montado como credencial.

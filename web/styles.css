@@ -62,6 +62,7 @@ h2 { font-size: 1.35rem; letter-spacing: -.025em; }
 .monitor-state small { display: block; margin-top: 3px; color: var(--muted); }
 .credentials-button { padding: 6px 9px; color: var(--muted); background: transparent; border-color: var(--line); font-size: .72rem; font-weight: 650; }
 .credentials-button:hover { color: var(--text); border-color: var(--muted); }
+#auth-status { display: block; max-width: 240px; margin-top: 4px; color: var(--muted); font-size: .72rem; overflow-wrap: anywhere; }
 .status-dot { width: 10px; height: 10px; border-radius: 50%; background: var(--muted); box-shadow: 0 0 0 5px rgba(145, 163, 168, .1); }
 .status-dot.running { background: var(--accent); animation: pulse 1.2s infinite; }
 .status-dot.ready { background: var(--success); }
