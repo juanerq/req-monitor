@@ -4,6 +4,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { conversationStatus, deriveCommentCycle, type ActiveDeadline } from "./deadline.js";
+import { extractPortalFieldsFromDom, parseReqDetails, type ReqDetails } from "./req-details.js";
 
 const APP_URL =
   process.env.APP_URL ??
@@ -40,6 +41,14 @@ type ReqResult = {
   status: string | null;
   title: string | null;
   requester: string | null;
+  description: string | null;
+  instructions: string | null;
+  requesterUserId: string | null;
+  requesterEmail: string | null;
+  requesterPhone: string | null;
+  sentAt: string | null;
+  updatedAt: string | null;
+  requestDetails: ReqDetails["requestDetails"];
   microservices: string[];
   pullRequestUrls: string[];
   detailUrl: string | null;
@@ -255,15 +264,13 @@ async function openReq(page: Page, req: string): Promise<void> {
 }
 
 async function extractFromDom(page: Page): Promise<{
-  status: string | null;
   title: string | null;
-  requester: string | null;
-  microservices: string[];
-  pullRequestUrls: string[];
+  details: ReqDetails;
   comments: Omit<Comment, "isResponse">[];
 }> {
   await page.evaluate("globalThis.__name = (target) => target");
-  return page.evaluate(() => {
+  const portalFields = await page.evaluate(extractPortalFieldsFromDom);
+  const raw = await page.evaluate(() => {
     const clean = (value: string | null | undefined): string =>
       (value ?? "").replace(/\s+/g, " ").trim();
     const cleanMultiline = (value: string | null | undefined): string =>
@@ -274,72 +281,11 @@ async function extractFromDom(page: Page): Promise<{
         .join("\n");
     const text = (element: Element | null): string => clean(element?.textContent);
     const all = [...document.querySelectorAll("body *")];
-    const exact = (pattern: RegExp): Element | undefined =>
-      all.find((element) => pattern.test(text(element)) && element.children.length === 0);
-    const leafTexts = (element: Element): string[] =>
-      [...element.querySelectorAll("*")]
-        .filter((child) => child.children.length === 0)
-        .map(text)
-        .filter(Boolean);
-    const valueAfter = (label: RegExp): string | null => {
-      const element = exact(label);
-      if (!element) return null;
-      const sibling = element.nextElementSibling;
-      if (sibling && text(sibling)) return leafTexts(sibling)[0] ?? text(sibling);
-      const parent = element.parentElement;
-      if (!parent) return null;
-      const parts = [...parent.children].map(text).filter(Boolean);
-      return parts.find((part) => !label.test(part)) ?? null;
-    };
-    const requesterAfter = (): string | null => {
-      const requester = document.querySelector('[data-ta="headlineUserName"]');
-      if (requester && text(requester)) return text(requester);
-      const label = exact(/^(Petici[oó]n para|Requested? for)$/i);
-      if (!label?.parentElement) return null;
-      const candidates = leafTexts(label.parentElement).filter(
-        (part) =>
-          part.length > 1 &&
-          !/^(Petici[oó]n para|Requested? for)$/i.test(part) &&
-          !/^(ID de usuario|User ID)/i.test(part) &&
-          !part.includes("@"),
-      );
-      return candidates[0] ?? null;
-    };
-    const extractMicroservices = (): string[] => {
-      const label = exact(/^Descripci[oó]n Detallada de la Solicitud$/i);
-      const description = label?.parentElement?.querySelector("dd");
-      if (!description) return [];
-      const matches = [...(description as HTMLElement).innerText.matchAll(
-        /Microservicio(?:s|\s*\d+)?\s*:\s*([^\n\r]+)/gi,
-      )];
-      return [...new Set(
-        matches.flatMap((match) =>
-          match[1]
-            .split(/[,;]/)
-            .map((value) => clean(value))
-            .filter(Boolean),
-        ),
-      )];
-    };
-    const extractPullRequestUrls = (): string[] => {
-      const label = exact(/^Descripci[oó]n Detallada de la Solicitud$/i);
-      const description = label?.parentElement?.querySelector("dd");
-      if (!description) return [];
-      return [...new Set(
-        [...description.querySelectorAll("a[href]")]
-          .map((link) => (link as HTMLAnchorElement).href)
-          .filter((url) => /\/pullrequest\/\d+/i.test(url)),
-      )];
-    };
 
     const heading = all.find((element) => /^(Comentarios|Comments)\b/i.test(text(element)));
     if (!heading) {
       return {
-        status: valueAfter(/^(Estado|Status)$/i),
         title: document.querySelector("h1, h2")?.textContent?.trim() ?? null,
-        requester: requesterAfter(),
-        microservices: extractMicroservices(),
-        pullRequestUrls: extractPullRequestUrls(),
         comments: [],
       };
     }
@@ -435,14 +381,11 @@ async function extractFromDom(page: Page): Promise<{
       .filter((value) => value && !/^(Detalles|Details|Comentarios|Comments)/i.test(value));
 
     return {
-      status: valueAfter(/^(Estado|Status)$/i),
       title: titleCandidates[0] ?? null,
-      requester: requesterAfter(),
-      microservices: extractMicroservices(),
-      pullRequestUrls: extractPullRequestUrls(),
       comments,
     };
   });
+  return { title: raw.title, details: parseReqDetails(portalFields), comments: raw.comments };
 }
 
 function findUrls(value: unknown, results: Attachment[]): void {
@@ -518,14 +461,14 @@ async function inspectReq(page: Page, req: string): Promise<ReqResult> {
     await openReq(page, req);
     const data = await extractFromDom(page);
     const detailUrl = await createDetailUrl(page);
-    const requester = normalizeName(data.requester);
+    const requester = normalizeName(data.details.requester);
     const comments: Comment[] = data.comments.map((comment) => ({
       ...comment,
       attachments: uniqueAttachments(comment.attachments),
       isResponse: Boolean(requester) && normalizeName(comment.author) !== requester,
     }));
     const responses = comments.filter((comment) => comment.isResponse);
-    const finalized = isFinalizedStatus(data.status);
+    const finalized = isFinalizedStatus(data.details.status);
     const cycle = deriveCommentCycle(comments, finalized);
     const { latestOperationsComment, requesterRepliesAfterOperations, activeDeadline } = cycle;
     const validating = isValidationComment(latestOperationsComment);
@@ -541,11 +484,8 @@ async function inspectReq(page: Page, req: string): Promise<ReqResult> {
       checkedAt: new Date().toISOString(),
       responded,
       conversationStatus: status,
-      status: data.status,
+      ...data.details,
       title: data.title,
-      requester: data.requester,
-      microservices: data.microservices,
-      pullRequestUrls: data.pullRequestUrls,
       detailUrl,
       latestOperationsComment,
       activeDeadline,
@@ -570,6 +510,7 @@ async function main(): Promise<void> {
   const browser = await chromium.launch({ headless: !options.headed });
   try {
     const context = await browser.newContext({
+      locale: "es-CO",
       ...(storageStateExists ? { storageState: AUTH_FILE } : {}),
       acceptDownloads: false,
     });
@@ -600,6 +541,14 @@ async function main(): Promise<void> {
           status: null,
           title: null,
           requester: null,
+          description: null,
+          instructions: null,
+          requesterUserId: null,
+          requesterEmail: null,
+          requesterPhone: null,
+          sentAt: null,
+          updatedAt: null,
+          requestDetails: { operationType: null, application: null, requestType: null, clientType: null },
           microservices: [],
           pullRequestUrls: [],
           detailUrl: null,

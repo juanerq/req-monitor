@@ -7,6 +7,7 @@ test("Docker image copies imported deadline source before typecheck", () => {
   const sourceCopy = dockerfile.match(/^COPY (check-req\.ts .+) \.\/$/m)?.[1];
   assert.ok(sourceCopy, "Dockerfile must copy TypeScript sources");
   assert.ok(sourceCopy.split(/\s+/).includes("deadline.ts"), "deadline.ts must be in the image");
+  assert.ok(sourceCopy.split(/\s+/).includes("req-details.ts"), "req-details.ts must be in the image");
   assert.match(dockerfile, /RUN .*pnpm typecheck/);
 });
 

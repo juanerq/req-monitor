@@ -7,7 +7,7 @@ RUN corepack enable && corepack prepare pnpm@10.33.0 --activate
 COPY package.json pnpm-lock.yaml ./
 RUN pnpm install --frozen-lockfile --prod=false
 
-COPY check-req.ts deadline.ts monitor-req.ts monitor-api.ts tsconfig.json README.md ./
+COPY check-req.ts deadline.ts req-details.ts monitor-req.ts monitor-api.ts tsconfig.json README.md ./
 COPY web ./web
 RUN mkdir -p playwright/.auth artifacts && pnpm typecheck
 

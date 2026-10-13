@@ -2,6 +2,7 @@ import { spawnSync } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
 import type { ActiveDeadline } from "./deadline.js";
+import type { ReqDetails } from "./req-details.js";
 
 const PENDING_STATUS = "Pendiente de respuesta";
 const DEFAULT_REQ_FILE = process.env.REQ_FILE ?? "reqs.txt";
@@ -34,6 +35,15 @@ type ReqResult = {
   conversationStatus: ConversationStatus;
   status: string | null;
   title: string | null;
+  requester: string | null;
+  description: string | null;
+  instructions: string | null;
+  requesterUserId: string | null;
+  requesterEmail: string | null;
+  requesterPhone: string | null;
+  sentAt: string | null;
+  updatedAt: string | null;
+  requestDetails: ReqDetails["requestDetails"];
   microservices: string[];
   pullRequestUrls: string[];
   detailUrl: string | null;
