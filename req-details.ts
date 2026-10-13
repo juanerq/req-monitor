@@ -8,7 +8,7 @@ export function extractPortalFieldsFromDom(): {
 } {
   const clean = (value: string | null | undefined): string =>
     (value ?? "").replace(/\s+/g, " ").trim();
-  const labelPattern = /^(?:Descripci[oó]n Detallada de la Solicitud|Detailed Request Description|Instrucciones|Instructions|Petici[oó]n para|Requested? for|Solicitante|Requester|ID de usuario|User ID|Identificador de usuario|Correo electr[oó]nico|Email|E-mail|Tel[eé]fono|N[uú]mero de tel[eé]fono|Phone|Phone number|Enviado|Fecha de env[ií]o|Sent|Submitted(?: on)?|[uÚ]ltima actualizaci[oó]n|Fecha de actualizaci[oó]n|Last updated|Updated|Tipo de operaci[oó]n|Operation type|Aplicaci[oó]n|Application|Tipo de solicitud|Request type|Tipo de cliente|Client type)$/i;
+  const labelPattern = /^(?:Descripci[oó]n Detallada de la Solicitud|Detailed Request Description|Instrucciones|Instructions|Petici[oó]n para|Requested? for|Solicitante|Requester|Correo electr[oó]nico|Email|E-mail|Tel[eé]fono|N[uú]mero de tel[eé]fono|Pedido para tel[eé]fono|N[uú]mero de Contacto|Phone|Phone number|Enviado|Fecha de env[ií]o|Sent|Submitted(?: on)?|[uÚ]ltima actualizaci[oó]n|Fecha de actualizaci[oó]n|Last updated|Updated|Tipo de operaci[oó]n|Operation type|Aplicaci[oó]n|Application|Tipo de solicitud|Request type|Tipo de cliente|Client type)$/i;
   const fields: LabeledField[] = [];
   const excludedValues: Element[] = [];
   let descriptionLinks: string[] = [];
@@ -39,6 +39,20 @@ export function extractPortalFieldsFromDom(): {
   }
   if (statusCandidates.length > 0 && statusCandidates.every((value) => value === statusCandidates[0])) {
     fields.push({ label: "Status", value: statusCandidates[0] });
+  }
+
+  // Accept an ID only from a compact, unambiguous name + label + value header.
+  const names = [...document.querySelectorAll('[data-ta="headlineUserName"]')]
+    .filter((name) => !name.closest("dwp-event-details, dwp-comments, .comments__comment-block"));
+  if (detailContainers.length > 0 && names.length === 1) {
+    const name = names[0];
+    const siblings = [...(name.parentElement?.children ?? [])];
+    if (siblings.length === 3 && siblings[0] === name &&
+        /^(?:ID de usuario|User ID):?$/i.test(clean(siblings[1].textContent)) &&
+        siblings[1].children.length === 0 && siblings[2].children.length === 0) {
+      const value = clean(visibleText(siblings[2]));
+      if (value && value.length <= 256) fields.push({ label: "User ID", value });
+    }
   }
 
   for (const element of [...detailContainers].flatMap((container) => [...container.querySelectorAll("*")])) {
@@ -156,7 +170,7 @@ export function parseReqDetails(input: {
     requester: get(["peticion para", "requested for", "request for", "solicitante", "requester"]) ?? plain(input.headlineRequester ?? undefined, limits.short),
     requesterUserId: get(["id de usuario", "user id", "identificador de usuario"]),
     requesterEmail: get(["correo electronico", "email", "e-mail"]),
-    requesterPhone: get(["telefono", "numero de telefono", "phone", "phone number"]),
+    requesterPhone: get(["telefono", "numero de telefono", "pedido para telefono", "numero de contacto", "phone", "phone number"]),
     sentAt: get(["enviado", "fecha de envio", "sent", "submitted", "submitted on"]),
     updatedAt: get(["ultima actualizacion", "fecha de actualizacion", "last updated", "updated"]),
     requestDetails: {

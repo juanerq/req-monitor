@@ -90,6 +90,68 @@ test("observed portal definition list and status header yield only scoped fields
   }
 });
 
+test("observed phone labels require structural event detail pairs", async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    for (const label of ["Pedido para teléfono", "Numero de Contacto"]) {
+      await page.setContent(`<article>${label}: +000 999999</article>
+        <dwp-event-details><dl><dt>${label}</dt><dd>+000 123456</dd>
+          <dt>Descripción Detallada de la Solicitud</dt><dd>${label}: +000 888888</dd></dl></dwp-event-details>
+        <dwp-comments>${label}: +000 777777</dwp-comments>`);
+      const details = parseReqDetails(await page.evaluate(extractPortalFieldsFromDom));
+      assert.equal(details.requesterPhone, "+000 123456", label);
+    }
+    await page.setContent(`<dl><dt>Numero de Contacto</dt><dd>+000 999999</dd></dl>
+      <dwp-event-details><dl><dt>Descripción Detallada de la Solicitud</dt>
+        <dd>Pedido para teléfono: +000 888888</dd></dl></dwp-event-details>`);
+    assert.equal(parseReqDetails(await page.evaluate(extractPortalFieldsFromDom)).requesterPhone, null);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("user ID requires explicit label and value beside requester headline", async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    for (const label of ["ID de usuario", "User ID"]) {
+      await page.setContent(`<section><div><span data-ta="headlineUserName">Casey Sample</span>
+          <span>${label}</span><span>sample.user42</span></div></section>
+        <dwp-event-details><dl><dt>Descripción Detallada de la Solicitud</dt>
+          <dd>${label}: wrong.user; +000 999999</dd></dl></dwp-event-details>`);
+      const details = parseReqDetails(await page.evaluate(extractPortalFieldsFromDom));
+      assert.equal(details.requester, "Casey Sample");
+      assert.equal(details.requesterUserId, "sample.user42", label);
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
+test("user ID remains absent without a compact labeled requester header", async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    for (const header of [
+      '<div><span data-ta="headlineUserName">Casey Sample 4242</span></div>',
+      '<div><span data-ta="headlineUserName">Casey Sample</span><span>4242</span></div>',
+      '<div><span data-ta="headlineUserName">Casey Sample</span><span>ID de usuario</span><span>first</span><span>User ID</span><span>second</span></div>',
+    ]) {
+      await page.setContent(`${header}<div><span>ID de usuario</span><span>outside.user</span></div>
+        <dwp-event-details><dl><dt>ID de usuario</dt><dd>detail.user</dd>
+          <dt>Descripción Detallada de la Solicitud</dt>
+          <dd>ID de usuario: prose.user; Numero de Contacto: +000 999999</dd></dl></dwp-event-details>
+        <dwp-comments>User ID: comment.user</dwp-comments>`);
+      const details = parseReqDetails(await page.evaluate(extractPortalFieldsFromDom));
+      assert.equal(details.requesterUserId, null);
+      assert.equal(details.requesterPhone, null);
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
 test("English header fallback works without comments", async () => {
   const browser = await chromium.launch();
   try {
