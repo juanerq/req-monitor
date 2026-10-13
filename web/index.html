@@ -21,7 +21,10 @@
             <small id="monitor-time">Sin información</small>
           </div>
         </div>
-        <button id="credentials-button" class="credentials-button" type="button" title="Renovar sesión MiAsistencia360">Acceso</button>
+        <div>
+          <button id="credentials-button" class="credentials-button" type="button" title="Configurar acceso MiAsistencia360">Acceso</button>
+          <small id="auth-status" role="status">Comprobando sesión local</small>
+        </div>
       </div>
     </header>
 
@@ -92,7 +95,8 @@
       <form id="credentials-form">
         <p class="eyebrow">MIASISTENCIA360</p>
         <h2>Renovar sesión</h2>
-        <p>Las credenciales se usan una sola vez. Solo se guarda la sesión resultante.</p>
+        <p id="credentials-session-status">La sesión local aún no se ha comprobado.</p>
+        <p>El usuario guardado es una etiqueta ingresada, no una identidad verificada. Si el portal solicita iniciar sesión, introduce la contraseña aquí; no se almacena.</p>
         <label for="credentials-username">Usuario</label>
         <input id="credentials-username" name="username" autocomplete="username" required>
         <label for="credentials-password">Contraseña</label>

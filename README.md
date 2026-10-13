@@ -14,7 +14,7 @@ Automatización Playwright para consultar REQ, detectar respuestas de agentes y 
 pnpm run auth
 ```
 
-Inicia sesión en el navegador. Cuando aparezca el catálogo, vuelve a la terminal y presiona Enter. La sesión se guarda en `playwright/.auth/miasistencia.json`; nunca agregues ese archivo a Git.
+Inicia sesión en el navegador. Cuando aparezca el catálogo, vuelve a la terminal y presiona Enter. La sesión se guarda en `AUTH_FILE` (por defecto `playwright/.auth/miasistencia.json`) y, cuando se proporciona, el usuario ingresado se guarda como etiqueta local en `username.json`, dentro de la misma carpeta privada. Nunca agregues estos archivos a Git. El nombre guardado no verifica la identidad del portal.
 
 ## Consultar una REQ
 
@@ -160,7 +160,8 @@ Con API activa, abre `http://127.0.0.1:8787`. La interfaz permite:
 - Ejecutar monitor completo bajo demanda.
 - Consultar una REQ específica sin agregarla al monitoreo ni enviar alertas a Teams.
 - Descargar adjuntos mediante sesión autenticada del backend, sin abrir enlaces REST expirados.
-- Renovar sesión MiAsistencia360 desde botón discreto `Acceso`; credenciales no se guardan.
+- Consultar desde `Acceso` si existe una sesión local y ver el usuario ingresado anteriormente, sin exponer contraseña ni cookies. Su presencia no confirma que el portal permita el acceso; `GET /api/auth/status` devuelve únicamente `localSessionAvailable` y `username`.
+- Iniciar sesión manualmente desde `Acceso` cuando el portal solicite nuevamente la contraseña. La contraseña se borra del formulario después del intento o al cerrarlo; no se guarda.
 
 Consulta manual equivalente por API:
 
@@ -197,4 +198,4 @@ docker compose restart monitor
 docker compose down
 ```
 
-Si la sesión expira, usa el botón `Acceso` en la interfaz web para renovarla. Usuario y contraseña solo se usan durante el inicio de sesión; se persiste únicamente la sesión Playwright en `playwright/.auth/miasistencia.json`.
+El monitor intenta reutilizar el estado local primero; un archivo presente no garantiza una sesión vigente ni implica renovación automática. Si el portal exige iniciar sesión, usa `Acceso` y proporciona la contraseña manualmente. Los errores de red no demuestran que la sesión haya expirado. La sesión Playwright y la etiqueta de usuario ingresado persisten en el volumen `playwright/.auth`; la contraseña no. La API no tiene autenticación propia: mantenla exclusivamente en el loopback local y protege el directorio montado como credencial.

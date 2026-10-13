@@ -157,9 +157,22 @@ function renderRows(reqs, results) {
 
 function renderDashboard(data) {
   state.dashboard = data;
+  renderAuthStatus(data.auth);
   updateSummary(data.reqs, data.results);
   updateMonitor(data.monitor, data.schedule);
   renderRows(data.reqs, data.results);
+}
+
+function renderAuthStatus(auth) {
+  const username = auth?.localSessionAvailable ? auth.username : null;
+  const status = auth?.localSessionAvailable
+    ? `Sesión local disponible, sin verificar en el portal${username ? ` · Usuario guardado (sin verificar): ${username}` : ""}`
+    : "Sin sesión local disponible · Inicia sesión desde Acceso";
+  document.querySelector("#auth-status").textContent = status;
+  document.querySelector("#credentials-session-status").textContent = status;
+  if (!elements.credentialsDialog.open) {
+    document.querySelector("#credentials-username").value = username || "";
+  }
 }
 
 async function loadDashboard(silent = false) {
@@ -312,7 +325,12 @@ elements.credentialsButton.addEventListener("click", () => {
 });
 
 document.querySelector("#credentials-cancel").addEventListener("click", () => {
+  document.querySelector("#credentials-password").value = "";
   elements.credentialsDialog.close();
+});
+
+elements.credentialsDialog.addEventListener("close", () => {
+  document.querySelector("#credentials-password").value = "";
 });
 
 elements.credentialsForm.addEventListener("submit", async (event) => {
@@ -330,6 +348,7 @@ elements.credentialsForm.addEventListener("submit", async (event) => {
     password.value = "";
     elements.credentialsDialog.close();
     toast("Sesión MiAsistencia360 renovada");
+    await loadDashboard(true);
   } catch (error) {
     toast(error.message);
   } finally {
