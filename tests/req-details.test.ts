@@ -67,6 +67,22 @@ test("DOM extraction preserves long detail values without silent clipping", asyn
   }
 });
 
+test("DOM extraction reads project only from detailed description, not instructions or comments", async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<dwp-event-details><dl>
+      <dt>Descripción Detallada de la Solicitud</dt><dd>Deployment notes<br>Proyecto: Sample Platform</dd>
+      <dt>Instrucciones</dt><dd>Proyecto: Instruction Platform</dd>
+      <dt>Aplicación</dt><dd>Application Platform</dd>
+    </dl></dwp-event-details><dwp-comments>Proyecto: Comment Platform</dwp-comments>`);
+    const details = parseReqDetails(await page.evaluate(extractPortalFieldsFromDom));
+    assert.equal(details.projectName, "Sample Platform");
+  } finally {
+    await browser.close();
+  }
+});
+
 test("observed portal definition list and status header yield only scoped fields", async () => {
   const browser = await chromium.launch();
   try {
@@ -244,6 +260,51 @@ test("bullet-prefixed exact microservice names come only from description", () =
     { label: "Instrucciones", value: "• Nombre de microservicio. InstructionApi" },
   ] });
   assert.deepEqual(details.microservices, ["AlphaApi", "BetaApi", "GammaApi"]);
+});
+
+test("project name comes only from an explicit description line and preserves observed spelling", () => {
+  const details = parseReqDetails({ fields: [
+    { label: "Descripción Detallada de la Solicitud", value: "Deployment notes\n• Proyecto:   Órbita Norte  \nNombre de microservicio. SampleApi" },
+    { label: "Instrucciones", value: "Proyecto: InstructionProject" },
+    { label: "Aplicación", value: "ApplicationProject" },
+  ] });
+  assert.equal(details.projectName, "Órbita Norte");
+  assert.deepEqual(details.microservices, ["SampleApi"]);
+});
+
+test("project name is absent without a standalone description field", () => {
+  for (const description of [
+    "Deploy SampleApi for ProjectAlpha",
+    "Please set Proyecto: InlineProject in the form",
+    "https://example.test/Proyecto:UrlProject",
+    "Proyecto: ",
+    "Proyecto: <img src=x onerror=alert(1)>",
+    `Proyecto: ${"x".repeat(257)}`,
+  ]) {
+    const details = parseReqDetails({ fields: [
+      { label: "Descripción Detallada de la Solicitud", value: description },
+      { label: "Instrucciones", value: "Proyecto: InstructionProject" },
+      { label: "Aplicación", value: "ApplicationProject" },
+      { label: "Proyecto", value: "UnscopedProject" },
+    ] });
+    assert.equal(details.projectName, null, description.slice(0, 70));
+  }
+  assert.equal(parseReqDetails({ fields: [{ label: "Instrucciones", value: "Proyecto: InstructionProject" }] }).projectName, null);
+});
+
+test("identical project lines deduplicate while conflicting names fail closed", () => {
+  const parse = (value: string) => parseReqDetails({ fields: [
+    { label: "Descripción Detallada de la Solicitud", value },
+  ] }).projectName;
+  assert.equal(parse("Proyecto: Cedar Works\n- Proyecto: Cedar Works"), "Cedar Works");
+  assert.equal(parse("Proyecto: Cedar Works\n* Proyecto: Pine Works"), null);
+  assert.equal(parse("Proyecto: Cedar Works\nProyecto: cedar works"), null);
+});
+
+test("check-req error results explicitly leave project name unavailable", () => {
+  const source = readFileSync(new URL("../check-req.ts", import.meta.url), "utf8");
+  const errorResult = source.slice(source.indexOf("results.push({", source.indexOf("async function main()")));
+  assert.match(errorResult, /description: null,\s*projectName: null,/);
 });
 
 test("retains only explicitly labeled portal fields and description microservices", () => {

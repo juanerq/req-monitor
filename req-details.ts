@@ -91,6 +91,7 @@ export function extractPortalFieldsFromDom(): {
 export type ReqDetails = {
   status: string | null;
   description: string | null;
+  projectName: string | null;
   instructions: string | null;
   requester: string | null;
   requesterUserId: string | null;
@@ -144,6 +145,23 @@ function microservices(description: string | null): string[] {
   return [...names].slice(0, 50);
 }
 
+function projectName(description: string | null): string | null {
+  if (!description) return null;
+  let observed: string | null = null;
+  for (const line of description.split("\n")) {
+    const match = line.match(/^(?:[•*\-]\s*)?Proyecto\s*:\s*(.*)$/iu);
+    if (!match) continue;
+    const name = match[1].trim();
+    // A malformed explicit field is ambiguous; never replace it with another candidate.
+    if (!name || name.length > limits.short ||
+        !/^[\p{L}\p{N}][\p{L}\p{N} _.,()'&/-]*$/u.test(name) ||
+        /(?:https?:\/\/|www\.|\/\/|&(?:lt|gt|#\d+|#x[\da-f]+);)/i.test(name)) return null;
+    if (observed !== null && observed !== name) return null;
+    observed = name;
+  }
+  return observed;
+}
+
 /** Interpret only labels observed on the request, never conversation content. */
 export function parseReqDetails(input: {
   fields: LabeledField[];
@@ -166,6 +184,7 @@ export function parseReqDetails(input: {
   return {
     status: get(["estado", "status"]),
     description,
+    projectName: projectName(description),
     instructions: get(["instrucciones", "instructions"], limits.long),
     requester: get(["peticion para", "requested for", "request for", "solicitante", "requester"]) ?? plain(input.headlineRequester ?? undefined, limits.short),
     requesterUserId: get(["id de usuario", "user id", "identificador de usuario"]),
