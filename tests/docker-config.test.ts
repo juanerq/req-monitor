@@ -5,7 +5,10 @@ import { test } from "node:test";
 test("Docker image copies imported deadline source before typecheck", () => {
   const dockerfile = fs.readFileSync("Dockerfile", "utf8");
   assert.match(dockerfile, /^COPY \. \.\/$/m, "Dockerfile copies allowlisted sources from context");
-  assert.match(fs.readFileSync(".dockerignore", "utf8"), /^!deadline\.ts$/m, "deadline.ts must be in the image");
+  const included = new Set(fs.readFileSync(".dockerignore", "utf8").split(/\r?\n/).filter((rule) => rule.startsWith("!")));
+  for (const source of ["deadline.ts", "auth-session.ts", "req-details.ts"]) {
+    assert.ok(included.has(`!${source}`), `${source} must be in the image`);
+  }
   assert.match(dockerfile, /RUN .*pnpm typecheck/);
 });
 

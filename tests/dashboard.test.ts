@@ -49,3 +49,75 @@ test("Acceso displays only an unverified username label and local session availa
   assert.match(fields.get("#auth-status")?.textContent ?? "", /sin sesión local/i);
   assert.equal(fields.get("#credentials-username")?.value, "");
 });
+
+function dashboardHarness() {
+  const html = fs.readFileSync("web/index.html", "utf8");
+  const cell = { innerHTML: "" };
+  const panel = { hidden: true, querySelector: (_selector: string) => cell };
+  const button = { dataset: { details: "0" }, ariaExpanded: "false", setAttribute(name: string, value: string) { if (name === "aria-expanded") this.ariaExpanded = value; } };
+  const list = { innerHTML: "", querySelector: (_selector: string) => panel };
+  const empty = { hidden: false };
+  const document = { querySelector: (selector: string) => selector === "#req-list" ? list : selector === "#empty-state" ? empty : {} };
+  const context = vm.createContext({ document, URL, console });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails;`, context);
+  const render = (result: object) => {
+    panel.hidden = true;
+    cell.innerHTML = "";
+    (context as { renderRowsForTest: (reqs: string[], results: object[]) => void })
+      .renderRowsForTest(["REQ123"], [{ req: "REQ123", ...result }]);
+  };
+  const toggle = () => (context as { toggleDetailsForTest: (button: object) => void }).toggleDetailsForTest(button);
+  return { html, list, panel, cell, button, render, toggle };
+}
+
+test("portal status is literal, independent of conversation status and unavailable when absent", () => {
+  const ui = dashboardHarness();
+  assert.match(ui.html, /Estado del portal/);
+  ui.render({ status: "Asignado por mesa", conversationStatus: "Pendiente de respuesta", microservices: ["servicio-a"], title: "Resumen" });
+  assert.match(ui.list.innerHTML, /Asignado por mesa/);
+  assert.doesNotMatch(ui.list.innerHTML, /<span class="badge[^>]*>Pendiente de respuesta/);
+  assert.match(ui.list.innerHTML, /servicio-a/);
+  ui.render({ conversationStatus: "Finalizada", status: null, microservices: [] });
+  assert.match(ui.list.innerHTML, /Estado no disponible/);
+  assert.doesNotMatch(ui.list.innerHTML, /Sin microservicio/);
+});
+
+test("details reveal stored fields on demand and close when toggled or refreshed", () => {
+  const ui = dashboardHarness();
+  const result = {
+    status: "En curso", conversationStatus: "Pendiente de respuesta", description: "Descripción completa\nsegunda línea",
+    instructions: "Paso primero", requester: "Persona Prueba", requesterUserId: "usuario-prueba",
+    requesterEmail: "prueba@example.invalid", requesterPhone: "555-0100", sentAt: "fecha de envío",
+    updatedAt: "fecha de actualización", requestDetails: { operationType: "Cambio", application: "App demo", requestType: "Tipo A", clientType: "Interno" },
+    checkedAt: "2026-10-09T12:00:00.000Z", microservices: ["servicio-a"],
+  };
+  ui.render(result);
+  assert.match(ui.list.innerHTML, /Ver detalles/);
+  assert.match(ui.list.innerHTML, /aria-expanded="false"/);
+  assert.doesNotMatch(ui.list.innerHTML, /Persona Prueba|prueba@example.invalid|Descripción completa/);
+  ui.toggle();
+  assert.equal(ui.panel.hidden, false);
+  assert.equal(ui.button.ariaExpanded, "true");
+  for (const value of ["Descripción completa", "segunda línea", "Paso primero", "Persona Prueba", "usuario-prueba", "prueba@example.invalid", "555-0100", "fecha de envío", "fecha de actualización", "Cambio", "App demo", "Tipo A", "Interno", "Pendiente de respuesta", "servicio-a"]) {
+    assert.ok(ui.cell.innerHTML.includes(value), value);
+  }
+  ui.toggle();
+  assert.equal(ui.panel.hidden, true);
+  assert.equal(ui.cell.innerHTML, "");
+  ui.toggle();
+  ui.render(result);
+  assert.equal(ui.panel.hidden, true);
+  assert.doesNotMatch(ui.list.innerHTML, /prueba@example.invalid/);
+});
+
+test("missing values stay unavailable and stored text and links cannot inject markup", () => {
+  const ui = dashboardHarness();
+  ui.render({ status: "<img src=x onerror=alert(1)>", title: "<svg onload=alert(1)>", detailUrl: "javascript:alert(1)", description: "<script>alert(1)</script>", requesterEmail: '" onfocus="alert(1)' });
+  assert.doesNotMatch(ui.list.innerHTML, /<img|<svg|href="javascript:/);
+  assert.match(ui.list.innerHTML, /&lt;img/);
+  ui.toggle();
+  assert.match(ui.cell.innerHTML, /&lt;script&gt;/);
+  assert.doesNotMatch(ui.cell.innerHTML, /<script|onfocus="alert/);
+  assert.match(ui.cell.innerHTML, /No disponible/);
+});

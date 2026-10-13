@@ -156,12 +156,16 @@ API no usa token y debe permanecer publicada exclusivamente en `127.0.0.1`.
 Con API activa, abre `http://127.0.0.1:8787`. La interfaz permite:
 
 - Ver estado y última revisión de las REQ monitoreadas.
+- La tabla muestra el estado literal observado en el portal; si falta, indica «Estado no disponible». El estado de conversación calculado aparece por separado en «Ver detalles» y sigue rigiendo alertas y recordatorios.
+- «Ver detalles» despliega únicamente datos ya guardados: descripción, instrucciones, metadatos, solicitante y fechas disponibles. Los datos personales permanecen ocultos hasta abrir el panel; los campos ausentes se indican como no disponibles. No realiza una consulta adicional al portal.
 - Agregar y eliminar REQ de `runtime/reqs.txt`.
 - Ejecutar monitor completo bajo demanda.
 - Consultar una REQ específica sin agregarla al monitoreo ni enviar alertas a Teams.
 - Descargar adjuntos mediante sesión autenticada del backend, sin abrir enlaces REST expirados.
 - Consultar desde `Acceso` si existe una sesión local y ver el usuario ingresado anteriormente, sin exponer contraseña ni cookies. Su presencia no confirma que el portal permita el acceso; `GET /api/auth/status` devuelve únicamente `localSessionAvailable` y `username`.
 - Iniciar sesión manualmente desde `Acceso` cuando el portal solicite nuevamente la contraseña. La contraseña se borra del formulario después del intento o al cerrarlo; no se guarda.
+
+Los resultados en `artifacts/monitor-results.json` (o la ruta `--output`) contienen datos personales del solicitante en texto claro. Guarda ese archivo y sus copias solo en almacenamiento local protegido, limita el acceso a la API local (`127.0.0.1`) y no compartas resultados ni capturas del panel. Los detalles abiertos se eliminan del DOM al cerrarlos o al actualizar la tabla; la interfaz actualiza los datos guardados cada 15 segundos, pero **Actualizar** solo recarga datos locales y no consulta el portal. Para obtener información nueva del portal, ejecuta el monitor o consulta una REQ manualmente; un campo no observado continúa como no disponible.
 
 Consulta manual equivalente por API:
 

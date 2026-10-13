@@ -1,4 +1,4 @@
-const state = { dashboard: null };
+const state = { dashboard: null, visibleResults: [] };
 
 const elements = {
   list: document.querySelector("#req-list"),
@@ -132,27 +132,75 @@ function updateMonitor(monitor, schedule) {
 
 function renderRows(reqs, results) {
   const byReq = new Map(results.map((result) => [result.req, result]));
+  state.visibleResults = reqs.map((req) => byReq.get(req) || null);
   elements.empty.hidden = reqs.length > 0;
-  elements.list.innerHTML = reqs.map((req) => {
-    const result = byReq.get(req);
-    const status = result?.conversationStatus || "Sin datos";
+  elements.list.innerHTML = reqs.map((req, index) => {
+    const result = state.visibleResults[index];
+    const status = result?.status?.trim() ? result.status : "Estado no disponible";
     const reqLink = result?.detailUrl
       ? `<a class="req-number" href="${safeUrl(result.detailUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(req)}</a>`
       : `<span class="req-number">${escapeHtml(req)}</span>`;
-    const microservices = result?.microservices?.join(", ") || "Sin microservicio";
-    const detail = result?.error || result?.title || result?.status || "Ejecuta el monitor para obtener información";
+    const microservices = Array.isArray(result?.microservices) ? result.microservices.filter(Boolean).join(", ") : "";
+    const detail = result?.error || result?.title || "Información no disponible";
     return `<tr>
-      <td><div class="req-identity"><span class="req-service">${escapeHtml(microservices)}</span>${reqLink}</div></td>
-      <td><span class="badge ${statusClass(status)}">${escapeHtml(status)}</span></td>
+      <td><div class="req-identity">${microservices ? `<span class="req-service">${escapeHtml(microservices)}</span>` : ""}${reqLink}</div></td>
+      <td><span class="badge">${escapeHtml(status)}</span></td>
       <td class="deadline-cell" data-label="Plazo indicado">${escapeHtml(statedDeadline(result))}</td>
       <td><div class="req-title">${escapeHtml(detail)}</div></td>
       <td>${escapeHtml(formatDate(result?.checkedAt))}</td>
       <td><div class="row-actions">
+        <button class="secondary" data-details="${index}" type="button" aria-expanded="false" aria-controls="req-details-${index}" aria-label="Ver detalles de ${escapeHtml(req)}">Ver detalles</button>
         <button class="secondary" data-query="${escapeHtml(req)}" type="button">Consultar</button>
         <button class="danger-button" data-delete="${escapeHtml(req)}" type="button">Borrar</button>
       </div></td>
+    </tr><tr class="detail-row" id="req-details-${index}" data-detail-panel="${index}" hidden><td colspan="6"></td>
     </tr>`;
   }).join("");
+}
+
+function available(value) {
+  return value == null || String(value).trim() === "" ? "No disponible" : String(value);
+}
+
+function renderStoredDetails(result) {
+  const fields = [
+    ["Estado del portal", result?.status],
+    ["Estado de conversación (calculado)", result?.conversationStatus],
+    ["Título", result?.title],
+    ["Microservicios detectados", result?.microservices?.length ? result.microservices.join(", ") : null],
+    ["Tipo de operación", result?.requestDetails?.operationType],
+    ["Aplicación", result?.requestDetails?.application],
+    ["Tipo de solicitud", result?.requestDetails?.requestType],
+    ["Tipo de cliente", result?.requestDetails?.clientType],
+    ["Solicitante", result?.requester],
+    ["ID de usuario", result?.requesterUserId],
+    ["Correo electrónico", result?.requesterEmail],
+    ["Teléfono", result?.requesterPhone],
+    ["Enviado", result?.sentAt],
+    ["Última actualización", result?.updatedAt],
+    ["Última revisión", result?.checkedAt ? formatDate(result.checkedAt) : null],
+    ["Plazo indicado", statedDeadline(result)],
+    ["Error de consulta", result?.error],
+  ];
+  return `<div class="stored-details" aria-label="Detalles de la REQ">
+    <h3>Información guardada de la REQ</h3>
+    <dl class="result-grid">${fields.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(available(value))}</dd></div>`).join("")}</dl>
+    <div class="detail-text"><h4>Descripción detallada de la solicitud</h4><p>${escapeHtml(available(result?.description))}</p></div>
+    <div class="detail-text"><h4>Instrucciones</h4><p>${escapeHtml(available(result?.instructions))}</p></div>
+  </div>`;
+}
+
+function toggleDetails(button) {
+  const index = Number(button.dataset.details);
+  if (!Number.isInteger(index) || index < 0 || index >= state.visibleResults.length) return;
+  const panel = elements.list.querySelector(`[data-detail-panel="${index}"]`);
+  if (!panel) return;
+  const open = panel.hidden;
+  panel.hidden = !open;
+  panel.querySelector("td").innerHTML = open ? renderStoredDetails(state.visibleResults[index]) : "";
+  button.setAttribute("aria-expanded", String(open));
+  button.textContent = open ? "Ocultar detalles" : "Ver detalles";
+  button.setAttribute("aria-label", `${button.textContent} de ${state.visibleResults[index]?.req || "la REQ"}`);
 }
 
 function renderDashboard(data) {
@@ -216,11 +264,11 @@ function renderQueryResult(result) {
     <h2>${escapeHtml(result.req)}</h2>
     ${result.error ? `<p>${escapeHtml(result.error)}</p>` : `
       <dl class="result-grid">
-        <div><dt>Estado</dt><dd><span class="badge ${statusClass(result.conversationStatus)}">${escapeHtml(result.conversationStatus)}</span></dd></div>
-        <div><dt>Estado del portal</dt><dd>${escapeHtml(result.status || "Desconocido")}</dd></div>
+        <div><dt>Estado de conversación (calculado)</dt><dd><span class="badge ${statusClass(result.conversationStatus)}">${escapeHtml(available(result.conversationStatus))}</span></dd></div>
+        <div><dt>Estado del portal</dt><dd>${escapeHtml(result.status?.trim() ? result.status : "Estado no disponible")}</dd></div>
         <div><dt>Consultada</dt><dd>${escapeHtml(formatDate(result.checkedAt))}</dd></div>
         <div><dt>Título</dt><dd>${escapeHtml(result.title || "Sin título")}</dd></div>
-        <div><dt>Microservicios</dt><dd>${escapeHtml((result.microservices || []).join(", ") || "No detectados")}</dd></div>
+        <div><dt>Microservicios</dt><dd>${escapeHtml((result.microservices || []).join(", ") || "No disponibles")}</dd></div>
         <div><dt>Operaciones</dt><dd>${escapeHtml(comment?.author || "Sin comentario")}</dd></div>
       </dl>
       ${comment?.text ? `<p class="result-comment">${escapeHtml(comment.text)}</p>` : ""}
@@ -381,6 +429,11 @@ elements.queryResult.addEventListener("click", (event) => {
 });
 
 elements.list.addEventListener("click", async (event) => {
+  const detailsButton = event.target.closest("[data-details]");
+  if (detailsButton) {
+    toggleDetails(detailsButton);
+    return;
+  }
   const queryButton = event.target.closest("[data-query]");
   if (queryButton) {
     document.querySelector("#query-req").value = queryButton.dataset.query;
