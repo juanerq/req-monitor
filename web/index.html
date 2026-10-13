@@ -73,10 +73,24 @@
         </form>
 
         <div class="table-wrap">
+          <div class="filters" role="search">
+            <div class="filter-field">
+              <label for="filter-text">Filtrar por REQ, proyecto o microservicio</label>
+              <input id="filter-text" name="filter-text" placeholder="REQ, proyecto o microservicio" autocomplete="off">
+            </div>
+            <div class="filter-field">
+              <label for="filter-status">Estado del portal</label>
+              <select id="filter-status" name="filter-status">
+                <option value="all">Todos los estados</option>
+                <option value="Estado no disponible">Estado no disponible</option>
+              </select>
+            </div>
+            <p id="filter-count" class="filter-count" aria-live="polite"></p>
+          </div>
           <table>
             <thead>
               <tr>
-                <th>Microservicio / REQ</th>
+                <th>Proyecto / Microservicio / REQ</th>
                 <th>Estado del portal</th>
                 <th>Plazo indicado</th>
                 <th>Detalle</th>

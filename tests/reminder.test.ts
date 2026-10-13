@@ -93,6 +93,25 @@ test("disabled delivery persists pending observation and alerts once when enable
   assert.equal(sent.length, 1);
 });
 
+test("project is included in optional Teams alerts without enabling delivery or changing deduplication", async () => {
+  const item = { ...result, projectName: "Proyecto Sintético", microservices: ["servicio-demo"] };
+  const now = new Date("2026-10-09T13:15:00Z");
+  const messages: string[] = [];
+  const send = async (message: string) => { messages.push(message); };
+  const disabled = await processReqResult(item, undefined, now, false, send, false);
+  assert.equal(messages.length, 0);
+  assert.equal(disabled.lastNotified, undefined);
+  const enabled = await processReqResult(item, disabled, now, false, send);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /Proyecto: Proyecto Sintético/);
+  assert.match(messages[0], /Microservicio: servicio-demo/);
+  await processReqResult(item, enabled, now, false, send);
+  assert.equal(messages.length, 1);
+  const absent: string[] = [];
+  await processReqResult({ ...item, projectName: null }, undefined, now, false, async (message) => { absent.push(message); });
+  assert.doesNotMatch(absent[0], /Proyecto:/);
+});
+
 test("disabled changed pending comment clears old delivery; failed reenable remains retryable", async () => {
   const now = new Date("2026-10-09T19:00:00Z");
   const previous = { conversationStatus: result.conversationStatus, lastChecked: result.checkedAt,

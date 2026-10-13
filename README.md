@@ -89,7 +89,7 @@ Prueba solamente el webhook (requiere `TEAMS_WEBHOOK_URL`):
 pnpm monitor-req --test-notification
 ```
 
-El monitor envía una Adaptive Card con el nombre de los microservicios y las URLs de Pull Request encontrados en `Descripción Detallada de la Solicitud`. El botón `Abrir REQ` usa el enlace compartible oficial de MiAsistencia360 y dirige al detalle específico después de autenticarse. Un HTTP `202 Accepted` confirma que Power Automate recibió la solicitud; confirma la publicación en Teams desde el historial de ejecuciones del workflow.
+El monitor envía una Adaptive Card con el proyecto observado, cuando está disponible, los microservicios y las URLs de Pull Request encontrados en `Descripción Detallada de la Solicitud`. El botón `Abrir REQ` usa el enlace compartible oficial de MiAsistencia360 y dirige al detalle específico después de autenticarse. Un HTTP `202 Accepted` confirma que Power Automate recibió la solicitud; confirma la publicación en Teams desde el historial de ejecuciones del workflow.
 
 ### Ejecución programada
 
@@ -157,6 +157,7 @@ Con API activa, abre `http://127.0.0.1:8787`. La interfaz permite:
 
 - Ver estado y última revisión de las REQ monitoreadas.
 - La tabla muestra el estado literal observado en el portal; si falta, indica «Estado no disponible». El estado de conversación calculado aparece por separado en «Ver detalles» y sigue rigiendo alertas y recordatorios.
+- El proyecto se extrae únicamente de una línea explícita `Proyecto:` en la descripción detallada del portal; no se deduce del microservicio ni del título. La tabla, «Ver detalles» y la consulta manual muestran «Proyecto no disponible» o «No disponible» cuando falta. Para actualizar resultados ya guardados, ejecuta de nuevo el monitor; «Actualizar» solo recarga datos locales.
 - «Ver detalles» despliega únicamente datos ya guardados: descripción, instrucciones, metadatos, solicitante y fechas disponibles. Los datos personales permanecen ocultos hasta abrir el panel; los campos ausentes se indican como no disponibles. No realiza una consulta adicional al portal.
 - Agregar y eliminar REQ de `runtime/reqs.txt`.
 - Ejecutar monitor completo bajo demanda.

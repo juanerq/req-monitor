@@ -44,6 +44,7 @@ type ReqResult = {
   title: string | null;
   requester: string | null;
   description: string | null;
+  projectName: string | null;
   instructions: string | null;
   requesterUserId: string | null;
   requesterEmail: string | null;
@@ -547,6 +548,7 @@ async function main(): Promise<void> {
           title: null,
           requester: null,
           description: null,
+          projectName: null,
           instructions: null,
           requesterUserId: null,
           requesterEmail: null,

@@ -118,13 +118,28 @@ button:disabled { opacity: .45; cursor: wait; }
 .add-form label { font-weight: 700; }
 
 .table-wrap { overflow-x: auto; }
+.filters { display: flex; align-items: end; gap: 12px; margin-bottom: 14px; }
+.filter-field { display: grid; gap: 6px; }
+.filter-field label { color: var(--muted); font-size: .75rem; font-weight: 700; }
+.filter-field input { min-width: 220px; }
+.filter-field select {
+  padding: 11px 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  outline: none;
+}
+.filter-field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(239, 182, 77, .12); }
+.filter-count { margin: 0 0 11px auto; color: var(--muted); font-size: .8rem; }
 table { width: 100%; border-collapse: collapse; }
 th { padding: 10px; color: var(--muted); font-size: .72rem; letter-spacing: .08em; text-align: left; text-transform: uppercase; border-bottom: 1px solid var(--line); }
 td { padding: 16px 10px; vertical-align: top; border-bottom: 1px solid var(--line); }
 td:last-child { text-align: right; white-space: nowrap; }
 .req-number { color: var(--muted); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; font-weight: 650; text-decoration: none; }
 .req-number:hover { color: var(--text); }
-.req-identity { display: flex; align-items: flex-start; flex-direction: column; gap: 5px; min-width: max-content; }
+.req-identity { display: flex; align-items: flex-start; flex-direction: column; gap: 5px; min-width: 0; overflow-wrap: anywhere; }
+.req-project { color: var(--text); font-size: .92rem; font-weight: 850; }
 .req-service { color: var(--info); font-size: .92rem; font-weight: 850; letter-spacing: -.01em; }
 .req-title { max-width: 340px; color: var(--muted); font-size: .86rem; }
 .deadline-cell { min-width: 130px; white-space: nowrap; font-size: .84rem; }
