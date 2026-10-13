@@ -169,3 +169,120 @@ test("manual query shows observed project beside existing microservices", () => 
   assert.match(ui.query.innerHTML, /<dt>Proyecto<\/dt><dd>Proyecto Prueba<\/dd>/);
   assert.match(ui.query.innerHTML, /<dt>Microservicios<\/dt><dd>servicio-demo<\/dd>/);
 });
+
+function filterHarness() {
+  const fields = new Map<string, { textContent: string; value: string; innerHTML: string; hidden: boolean; open?: boolean }>();
+  const stub = (selector: string) => {
+    if (!fields.has(selector)) fields.set(selector, { textContent: "", value: "", innerHTML: "", hidden: false });
+    return fields.get(selector);
+  };
+  const cell = { innerHTML: "" };
+  const panel = { hidden: true, querySelector: (_selector: string) => cell };
+  const list = { innerHTML: "", querySelector: (_selector: string) => panel };
+  const detailsButton = {
+    dataset: { details: "0" },
+    ariaExpanded: "false",
+    textContent: "Ver detalles",
+    setAttribute(name: string, value: string) { if (name === "aria-expanded") this.ariaExpanded = value; },
+  };
+  const document = {
+    querySelector: (selector: string) => {
+      if (selector === "#req-list") return list;
+      if (selector === "#query-result") return stub(selector);
+      return stub(selector);
+    },
+  };
+  const context = vm.createContext({ document, URL, console });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(
+    `${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails; this.updateSummaryForTest = updateSummary; this.setFiltersForTest = (text, status) => { state.filters.text = text; state.filters.status = status; }; this.getFiltersForTest = () => ({ ...state.filters });`,
+    context,
+  );
+  const typed = context as unknown as {
+    renderRowsForTest: (reqs: string[], results: object[]) => void;
+    toggleDetailsForTest: (button: object) => void;
+    updateSummaryForTest: (reqs: string[], results: object[]) => void;
+    setFiltersForTest: (text: string, status: string) => void;
+    getFiltersForTest: () => { text: string; status: string };
+  };
+  const rows = () => [
+    { req: "REQ100", status: "En curso", projectName: "Proyecto Alfa", microservices: ["servicio-pagos"] },
+    { req: "REQ200", status: "Asignado por mesa", projectName: "Proyecto Beta", microservices: ["servicio-envios"] },
+    { req: "REQ300", status: null, projectName: null, microservices: [] },
+  ];
+  const renderAll = () => typed.renderRowsForTest(["REQ100", "REQ200", "REQ300"], rows());
+  return { fields, list, panel, cell, detailsButton, typed, renderAll, stub };
+}
+
+test("text filter matches REQ number, observed project and microservice without portal queries", () => {
+  const ui = filterHarness();
+  assert.equal(typeof (ui.typed as unknown as Record<string, unknown>).renderRowsForTest, "function");
+  ui.typed.setFiltersForTest("pagos", "all");
+  ui.renderAll();
+  assert.match(ui.list.innerHTML, /REQ100/);
+  assert.doesNotMatch(ui.list.innerHTML, /REQ200/);
+  ui.typed.setFiltersForTest("beta", "all");
+  ui.renderAll();
+  assert.match(ui.list.innerHTML, /REQ200/);
+  assert.doesNotMatch(ui.list.innerHTML, /REQ100/);
+  ui.typed.setFiltersForTest("req300", "all");
+  ui.renderAll();
+  assert.match(ui.list.innerHTML, /REQ300/);
+  assert.doesNotMatch(ui.list.innerHTML, /REQ100/);
+});
+
+test("status selector filters literal portal status including unavailable", () => {
+  const ui = filterHarness();
+  ui.typed.setFiltersForTest("", "En curso");
+  ui.renderAll();
+  assert.match(ui.list.innerHTML, /REQ100/);
+  assert.doesNotMatch(ui.list.innerHTML, /REQ200|REQ300/);
+  ui.typed.setFiltersForTest("", "Estado no disponible");
+  ui.renderAll();
+  assert.match(ui.list.innerHTML, /REQ300/);
+  assert.doesNotMatch(ui.list.innerHTML, /REQ100|REQ200/);
+});
+
+test("summary counts use all monitored REQs while filtered count and empty state reflect matches", () => {
+  const ui = filterHarness();
+  ui.typed.setFiltersForTest("pagos", "all");
+  ui.renderAll();
+  ui.typed.updateSummaryForTest(["REQ100", "REQ200", "REQ300"], [
+    { req: "REQ100", conversationStatus: "Pendiente de respuesta" },
+    { req: "REQ200", conversationStatus: "Respondida" },
+    { req: "REQ300", conversationStatus: "Finalizada" },
+  ]);
+  assert.equal(ui.fields.get("#count-total")?.textContent, 3);
+  assert.equal(ui.fields.get("#count-pending")?.textContent, 1);
+  assert.match(String(ui.fields.get("#filter-count")?.textContent ?? ""), /1.*3/);
+  ui.typed.setFiltersForTest("sin-coincidencias", "all");
+  ui.renderAll();
+  assert.doesNotMatch(ui.list.innerHTML, /REQ100|REQ200|REQ300/);
+  assert.equal(ui.stub("#empty-state").hidden, false);
+  assert.match(ui.stub("#empty-state").textContent, /sin coincidencias/i);
+});
+
+test("filters persist across re-render and detail controls follow the filtered rows", () => {
+  const ui = filterHarness();
+  ui.typed.setFiltersForTest("pagos", "all");
+  ui.renderAll();
+  ui.renderAll();
+  assert.equal(ui.typed.getFiltersForTest().text, "pagos");
+  assert.equal(ui.typed.getFiltersForTest().status, "all");
+  assert.match(ui.list.innerHTML, /REQ100/);
+  assert.doesNotMatch(ui.list.innerHTML, /REQ200/);
+  ui.typed.toggleDetailsForTest(ui.detailsButton);
+  assert.equal(ui.panel.hidden, false);
+  assert.match(ui.cell.innerHTML, /Proyecto Alfa/);
+});
+
+test("filter controls exist with accessible labels and escaped status options", () => {
+  const html = fs.readFileSync("web/index.html", "utf8");
+  assert.match(html, /id="filter-text"/);
+  assert.match(html, /id="filter-status"/);
+  assert.match(html, /id="filter-count"/);
+  assert.match(html, /Estado no disponible/);
+  const ui = filterHarness();
+  ui.typed.renderRowsForTest(["REQ1"], [{ req: "REQ1", status: '<img src=x onerror=alert(1)>' }]);
+  assert.doesNotMatch(ui.stub("#filter-status").innerHTML, /<img/);
+});

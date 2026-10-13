@@ -118,6 +118,20 @@ button:disabled { opacity: .45; cursor: wait; }
 .add-form label { font-weight: 700; }
 
 .table-wrap { overflow-x: auto; }
+.filters { display: flex; align-items: end; gap: 12px; margin-bottom: 14px; }
+.filter-field { display: grid; gap: 6px; }
+.filter-field label { color: var(--muted); font-size: .75rem; font-weight: 700; }
+.filter-field input { min-width: 220px; }
+.filter-field select {
+  padding: 11px 13px;
+  color: var(--text);
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 4px;
+  outline: none;
+}
+.filter-field select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px rgba(239, 182, 77, .12); }
+.filter-count { margin: 0 0 11px auto; color: var(--muted); font-size: .8rem; }
 table { width: 100%; border-collapse: collapse; }
 th { padding: 10px; color: var(--muted); font-size: .72rem; letter-spacing: .08em; text-align: left; text-transform: uppercase; border-bottom: 1px solid var(--line); }
 td { padding: 16px 10px; vertical-align: top; border-bottom: 1px solid var(--line); }

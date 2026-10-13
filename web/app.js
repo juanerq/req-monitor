@@ -1,4 +1,4 @@
-const state = { dashboard: null, visibleResults: [] };
+const state = { dashboard: null, visibleResults: [], filters: { text: "", status: "all" } };
 
 const elements = {
   list: document.querySelector("#req-list"),
@@ -8,6 +8,9 @@ const elements = {
   addForm: document.querySelector("#add-form"),
   queryForm: document.querySelector("#query-form"),
   queryResult: document.querySelector("#query-result"),
+  filterText: document.querySelector("#filter-text"),
+  filterStatus: document.querySelector("#filter-status"),
+  filterCount: document.querySelector("#filter-count"),
   credentialsButton: document.querySelector("#credentials-button"),
   credentialsDialog: document.querySelector("#credentials-dialog"),
   credentialsForm: document.querySelector("#credentials-form"),
@@ -130,12 +133,60 @@ function updateMonitor(monitor, schedule) {
   elements.queryForm.querySelector("button").disabled = busy;
 }
 
+function portalStatusLabel(result) {
+  return result?.status?.trim() ? result.status : "Estado no disponible";
+}
+
+function matchesFilters(req, result) {
+  const needle = String(state.filters.text ?? "").trim().toLowerCase();
+  if (needle) {
+    const microservices = Array.isArray(result?.microservices) ? result.microservices.filter(Boolean).join(" ") : "";
+    const project = result?.projectName?.trim() ? result.projectName : "";
+    if (!`${req} ${project} ${microservices}`.toLowerCase().includes(needle)) return false;
+  }
+  if (state.filters.status !== "all" && portalStatusLabel(result) !== state.filters.status) return false;
+  return true;
+}
+
+function syncStatusOptions(results) {
+  const select = elements.filterStatus;
+  if (!select || typeof select.innerHTML === "undefined") return;
+  const seen = new Set();
+  for (const result of results || []) {
+    const label = portalStatusLabel(result);
+    if (label !== "Estado no disponible") seen.add(label);
+  }
+  const options = ["all", "Estado no disponible", ...[...seen].sort((a, b) => a.localeCompare(b, "es"))];
+  select.innerHTML = options.map((value) => {
+    const label = value === "all" ? "Todos los estados" : value;
+    const selected = state.filters.status === value ? " selected" : "";
+    return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(label)}</option>`;
+  }).join("");
+  if ("value" in select) select.value = state.filters.status;
+}
+
+function updateFilterCount(total, shown) {
+  if (elements.filterCount) elements.filterCount.textContent = `Mostrando ${shown} de ${total}`;
+}
+
 function renderRows(reqs, results) {
   const byReq = new Map(results.map((result) => [result.req, result]));
-  state.visibleResults = reqs.map((req) => byReq.get(req) || null);
-  elements.empty.hidden = reqs.length > 0;
-  elements.list.innerHTML = reqs.map((req, index) => {
-    const result = state.visibleResults[index];
+  const entries = reqs
+    .map((req) => ({ req, result: byReq.get(req) || null }))
+    .filter(({ req, result }) => matchesFilters(req, result));
+  syncStatusOptions(results);
+  updateFilterCount(reqs.length, entries.length);
+  state.visibleResults = entries.map(({ result }) => result);
+  if (reqs.length === 0) {
+    elements.empty.textContent = "No hay REQ configuradas.";
+    elements.empty.hidden = false;
+  } else if (entries.length === 0) {
+    elements.empty.textContent = "Sin coincidencias para los filtros aplicados.";
+    elements.empty.hidden = false;
+  } else {
+    elements.empty.hidden = true;
+  }
+  elements.list.innerHTML = entries.map(({ req, result }, index) => {
     const status = result?.status?.trim() ? result.status : "Estado no disponible";
     const reqLink = result?.detailUrl
       ? `<a class="req-number" href="${safeUrl(result.detailUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(req)}</a>`
@@ -461,6 +512,20 @@ elements.run.addEventListener("click", async () => {
 });
 
 elements.refresh.addEventListener("click", () => loadDashboard());
+
+function applyLocalFilters() {
+  if (state.dashboard) renderRows(state.dashboard.reqs, state.dashboard.results);
+}
+
+elements.filterText.addEventListener("input", (event) => {
+  state.filters.text = event.target.value;
+  applyLocalFilters();
+});
+
+elements.filterStatus.addEventListener("change", (event) => {
+  state.filters.status = event.target.value;
+  applyLocalFilters();
+});
 async function start() {
   try {
     await loadDashboard();
