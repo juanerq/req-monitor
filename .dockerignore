@@ -6,6 +6,8 @@
 !deadline.ts
 !monitor-req.ts
 !monitor-api.ts
+!monitor-auth.ts
+!monitor-progress.ts
 !auth-session.ts
 !req-details.ts
 !tsconfig.json

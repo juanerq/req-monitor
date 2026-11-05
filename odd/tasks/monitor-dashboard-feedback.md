@@ -1,0 +1,24 @@
+# Monitor dashboard feedback
+Objective: Show live per-REQ monitor progress, visible failures, and actionable access renewal in the web dashboard.
+Branch: feature/monitor-dashboard-feedback; delivery: ask-on-risk, stacked-to-main PR strategy chosen by user; runner: node --test with tsx, npm typecheck, Docker build; forecast: approximately 350-500 authored lines.
+
+## Specs
+S1. "cuando ejecute el monitor quiero ir viendo en la web cuales se estan revisando y cuales faltan, como algo de carga por cada item de la tabla" Scope: per-item running and remaining feedback in the web table; acceptance: individual status updates during a run without treating old results as new.
+S2. "y si no se pudo ejecutar el monitoreo de ninguno o alguino saltar una alerta" Scope: visible web alert for full or partial monitor failure; acceptance: failures are distinct from not-yet-run items and shown once per run.
+S3. "mejora el formato de los mensaje de las REQ" Scope assumption: web REQ messages, clarified by "me refiero a la web"; acceptance: web-only display improvements without modifying Teams payload or alert rules.
+S4. "cuando lance error de acceso no digas que comando ejecutar solo abre la modal para ingresar las credeneciales" Scope: web authentication error handling; acceptance: reuse Acceso modal and suppress CLI instructions without swallowing unrelated errors.
+
+## Tasks
+T1 [S4] inline — checking; commit: pending — auth-specific errors open existing credential dialog once per run, with CLI instructions hidden in web UI.
+T2 [S1-S2] inline — checking; commit: pending — private per-REQ progress sidecar, web badges, one failure summary per run and stale-response isolation.
+T3 [S3] inline — checking; commit: pending — web manual REQ comment grouped and labelled; Teams untouched.
+
+## Log
+L1: cuando ejecute el monitor quiero ir viendo en la web cuales se estan revisando y cuales faltan, como algo de carga por cada item de la tabla, y si no se pudo ejecutar el monitoreo de ninguno o alguino saltar una alerta
+L2: mejora el formato de los mensaje de las REQ
+L3: cuando lance error de acceso no digas que comando ejecutar solo abre la modal para ingresar las credeneciales
+L4: me refiero a la web
+L5: Existing CLI emits a missing-session command, while the web already has a credential dialog. Batch monitor errors can be delayed and are only visible in the log and exit status today. Prior unrelated README, .atl, deploy, and SSH-task changes were present before this feature; do not stage or overwrite them. Route: inline; no parallel writer or context-backstop trigger. Risk: item 2 (auth/credentials), item 4 (asynchronous run ordering), item 3 if existing API consumers are changed incompatibly. Formatting scope is an assumption pending concrete examples; preserve existing Teams notifications.
+L6: RED observed for web auth dialog, monitor auth detection, per-REQ sidecar and badges/failure alerts, and manual REQ message layout. GREEN: 23 focused Node tests pass using built-in TypeScript stripping. Local pnpm offline install was unavailable (missing cached pnpm tarball), so the full suite and typecheck are running in an isolated offline Docker container against the modified sources; no production container recreation or Teams messages authorized by this change. Normalization, full proof, independent verification for risk items 2 and 4, and native review remain pending.
+L7: Offline container suite before correction had 88 tests: 75 passed, 13 failed in req-details with the known baseline `__name is not defined` browser error; typecheck passed. Independent verification found a late dashboard response could overwrite newer run progress (S1). A RED synthetic out-of-order response test reproduced it, and the sequence guard made all 24 focused tests GREEN; one scoped independent recheck passed. Final full suite and typecheck on corrected bytes, review and commit remain pending. Docker build without network could not fetch pnpm via Corepack; do not claim a successful image build.
+L8: Final isolated suite on corrected bytes: 89 tests, 76 passed, 13 known baseline browser failures, no new failing test; typecheck passed. User chose stacked-to-main for future PR slices; no PR creation, push or deployment authorized. Current local work unit includes access, per-REQ progress, and web display with shared app/tests; one coherent commit is close to the advisory 400-line budget. Risk: item 2 for credential UI and item 4 for out-of-order dashboard responses; Docker context includes the two new source modules.

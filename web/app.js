@@ -1,4 +1,8 @@
-const state = { dashboard: null, visibleResults: [], filters: { text: "", status: "all" } };
+const state = {
+  dashboard: null, visibleResults: [], filters: { text: "", status: "all" },
+  accessPromptedRun: null, alertedMonitorRun: null,
+};
+let dashboardRequestSequence = 0;
 
 const elements = {
   list: document.querySelector("#req-list"),
@@ -92,6 +96,30 @@ function toast(message) {
   toast.timeout = window.setTimeout(() => elements.toast.classList.remove("visible"), 3500);
 }
 
+function isAccessError(message) {
+  const text = String(message ?? "").trim();
+  return /(?:^|[\r\n])(?:Error: |REQ\d+: )?La sesión expiró\.(?:[\r\n]|$)/i.test(text) ||
+    /(?:^|[\r\n])(?:Error: )?No existe [^\r\n]+\. Ejecuta: pnpm run auth(?:[\r\n]|$)/i.test(text) ||
+    /^(?:No existe sesión MiAsistencia360|Sesión MiAsistencia360 expirada); usa Acceso$/i.test(text);
+}
+
+function openCredentialsDialog() {
+  if (elements.credentialsDialog.open) return;
+  elements.credentialsDialog.showModal();
+  document.querySelector("#credentials-username").focus();
+}
+
+function handleAccessError(message) {
+  if (!isAccessError(message)) return false;
+  openCredentialsDialog();
+  toast("Renová el acceso a MiAsistencia360 para continuar");
+  return true;
+}
+
+function webError(message) {
+  return isAccessError(message) ? "Se necesita renovar el acceso a MiAsistencia360" : message;
+}
+
 async function api(url, options = {}) {
   const headers = { ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers };
   const response = await fetch(url, { ...options, headers });
@@ -169,7 +197,7 @@ function updateFilterCount(total, shown) {
   if (elements.filterCount) elements.filterCount.textContent = `Mostrando ${shown} de ${total}`;
 }
 
-function renderRows(reqs, results) {
+function renderRows(reqs, results, progress = null, monitor = null) {
   const byReq = new Map(results.map((result) => [result.req, result]));
   const entries = reqs
     .map((req) => ({ req, result: byReq.get(req) || null }))
@@ -193,12 +221,21 @@ function renderRows(reqs, results) {
       : `<span class="req-number">${escapeHtml(req)}</span>`;
     const microservices = Array.isArray(result?.microservices) ? result.microservices.filter(Boolean).join(", ") : "";
     const project = result?.projectName?.trim() ? result.projectName : "Proyecto no disponible";
-    const detail = result?.error || result?.title || "Información no disponible";
+    const detail = webError(result?.error) || result?.title || "Información no disponible";
+    const inRun = progress?.startedAt && progress.startedAt === monitor?.startedAt;
+    const checked = inRun ? progress.items?.[req] : null;
+    const progressLabel = !inRun ? "" : checked === "running" ? "En revisión" :
+      checked === "success" ? monitor?.running ? "Consultada · resultados al finalizar" : "Revisada" :
+        checked === "error" ? "Error de revisión" :
+        monitor?.running ? "Pendiente" : "No revisada";
+    const progressClass = checked === "running" ? "running" : checked === "success" ? "success" :
+      checked === "error" ? "error" : "waiting";
     return `<tr>
       <td><div class="req-identity"><span class="req-project">${escapeHtml(project)}</span>${microservices ? `<span class="req-service">${escapeHtml(microservices)}</span>` : ""}${reqLink}</div></td>
       <td><span class="badge">${escapeHtml(status)}</span></td>
       <td class="deadline-cell" data-label="Plazo indicado">${escapeHtml(statedDeadline(result))}</td>
-      <td><div class="req-title">${escapeHtml(detail)}</div></td>
+      <td><div class="req-title">${escapeHtml(detail)}</div>${progressLabel
+        ? `<span class="req-progress ${progressClass}" role="status">${progressLabel}</span>` : ""}</td>
       <td>${escapeHtml(formatDate(result?.checkedAt))}</td>
       <td><div class="row-actions">
         <button class="secondary" data-details="${index}" type="button" aria-expanded="false" aria-controls="req-details-${index}" aria-label="Ver detalles de ${escapeHtml(req)}">Ver detalles</button>
@@ -233,7 +270,7 @@ function renderStoredDetails(result) {
     ["Última actualización", result?.updatedAt],
     ["Última revisión", result?.checkedAt ? formatDate(result.checkedAt) : null],
     ["Plazo indicado", statedDeadline(result)],
-    ["Error de consulta", result?.error],
+    ["Error de consulta", webError(result?.error)],
   ];
   return `<div class="stored-details" aria-label="Detalles de la REQ">
     <h3>Información guardada de la REQ</h3>
@@ -261,7 +298,22 @@ function renderDashboard(data) {
   renderAuthStatus(data.auth);
   updateSummary(data.reqs, data.results);
   updateMonitor(data.monitor, data.schedule);
-  renderRows(data.reqs, data.results);
+  renderRows(data.reqs, data.results, data.progress, data.monitor);
+  const monitor = data.monitor;
+  if (monitor?.startedAt && !monitor.running && monitor.exitCode !== null &&
+    data.progress?.startedAt === monitor.startedAt && state.alertedMonitorRun !== monitor.startedAt) {
+    state.alertedMonitorRun = monitor.startedAt;
+    const total = data.reqs.length;
+    const notReviewed = data.reqs.filter((req) => data.progress.items?.[req] !== "success").length;
+    if (total && notReviewed === total) toast("No se pudo revisar ninguna REQ en esta ejecución");
+    else if (notReviewed) toast(`No se pudieron revisar ${notReviewed} de ${total} REQ`);
+    else if (monitor.exitCode !== 0) toast("El monitoreo terminó con errores");
+  }
+  if (data.monitor?.authRequired && !data.monitor.running && data.monitor.startedAt &&
+    state.accessPromptedRun !== data.monitor.startedAt) {
+    state.accessPromptedRun = data.monitor.startedAt;
+    handleAccessError("La sesión expiró.");
+  }
 }
 
 function renderAuthStatus(auth) {
@@ -277,10 +329,12 @@ function renderAuthStatus(auth) {
 }
 
 async function loadDashboard(silent = false) {
+  const request = ++dashboardRequestSequence;
   try {
-    renderDashboard(await api("/api/dashboard"));
+    const data = await api("/api/dashboard");
+    if (request === dashboardRequestSequence) renderDashboard(data);
   } catch (error) {
-    if (!silent) toast(error.message);
+    if (!silent && request === dashboardRequestSequence) toast(error.message);
   }
 }
 
@@ -315,7 +369,7 @@ function renderQueryResult(result) {
   elements.queryResult.innerHTML = `
     <p class="eyebrow">RESULTADO MANUAL</p>
     <h2>${escapeHtml(result.req)}</h2>
-    ${result.error ? `<p>${escapeHtml(result.error)}</p>` : `
+    ${result.error ? `<p>${escapeHtml(webError(result.error))}</p>` : `
       <dl class="result-grid">
         <div><dt>Estado de conversación (calculado)</dt><dd><span class="badge ${statusClass(result.conversationStatus)}">${escapeHtml(available(result.conversationStatus))}</span></dd></div>
         <div><dt>Estado del portal</dt><dd>${escapeHtml(result.status?.trim() ? result.status : "Estado no disponible")}</dd></div>
@@ -325,7 +379,10 @@ function renderQueryResult(result) {
         <div><dt>Microservicios</dt><dd>${escapeHtml((result.microservices || []).join(", ") || "No disponibles")}</dd></div>
         <div><dt>Operaciones</dt><dd>${escapeHtml(comment?.author || "Sin comentario")}</dd></div>
       </dl>
-      ${comment?.text ? `<p class="result-comment">${escapeHtml(comment.text)}</p>` : ""}
+      ${comment?.text ? `<section class="result-comment" aria-label="Último comentario de Operaciones">
+        <h3>Último comentario de Operaciones</h3>
+        <p>${escapeHtml(comment.text)}</p>
+      </section>` : ""}
       <div class="result-resources">
         <div class="external-links">
           <span class="resource-label">Enlaces externos</span>
@@ -397,7 +454,7 @@ async function downloadAttachment(url, name, button) {
     window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1_000);
     toast("Descarga iniciada");
   } catch (error) {
-    toast(error.message);
+    if (!handleAccessError(error.message)) toast(error.message);
   } finally {
     button.disabled = false;
     if (action) action.textContent = originalText;
@@ -410,10 +467,12 @@ async function queryReq(req) {
   button.textContent = "Consultando...";
   try {
     const data = await api("/api/reqs/query", { method: "POST", body: JSON.stringify({ req }) });
-    renderQueryResult(data.results[0]);
-    toast("Consulta completada");
+    if (!handleAccessError(data.results[0]?.error)) {
+      renderQueryResult(data.results[0]);
+      toast(data.results[0]?.error ? "No se pudo consultar la REQ" : "Consulta completada");
+    }
   } catch (error) {
-    toast(error.message);
+    if (!handleAccessError(error.message)) toast(error.message);
   } finally {
     button.disabled = false;
     button.textContent = "Consultar REQ";
@@ -422,8 +481,7 @@ async function queryReq(req) {
 }
 
 elements.credentialsButton.addEventListener("click", () => {
-  elements.credentialsDialog.showModal();
-  document.querySelector("#credentials-username").focus();
+  openCredentialsDialog();
 });
 
 document.querySelector("#credentials-cancel").addEventListener("click", () => {

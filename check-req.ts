@@ -6,6 +6,7 @@ import { stdin, stdout } from "node:process";
 import { conversationStatus, deriveCommentCycle, type ActiveDeadline } from "./deadline.js";
 import { authFilePath, loadAuthEnvironment, saveAuthSession } from "./auth-session.js";
 import { extractPortalFieldsFromDom, parseReqDetails, type ReqDetails } from "./req-details.js";
+import { appendMonitorProgress } from "./monitor-progress.js";
 
 loadAuthEnvironment();
 const APP_URL =
@@ -533,11 +534,16 @@ async function main(): Promise<void> {
 
     const page = await context.newPage();
     const results: ReqResult[] = [];
+    const progressFile = process.env.MONITOR_PROGRESS_FILE;
     for (const req of reqs) {
+      if (progressFile) appendMonitorProgress(progressFile, req, "running");
       console.log(`Consultando ${req}...`);
+      let failed = false;
+      let accessExpired = false;
       try {
         results.push(await inspectReq(page, req));
       } catch (error) {
+        failed = true;
         const message = error instanceof Error ? error.message : String(error);
         results.push({
           req,
@@ -569,8 +575,10 @@ async function main(): Promise<void> {
           error: message,
         });
         console.error(`${req}: ${message}`);
-        if (/sesi[oó]n expir[oó]/i.test(message)) break;
+        accessExpired = /sesi[oó]n expir[oó]/i.test(message);
       }
+      if (progressFile) appendMonitorProgress(progressFile, req, failed ? "error" : "success");
+      if (accessExpired) break;
     }
 
     fs.mkdirSync(path.dirname(options.output), { recursive: true });

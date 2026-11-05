@@ -5,6 +5,8 @@ import path from "node:path";
 import Holidays from "date-holidays";
 import { chromium } from "playwright";
 import { authFilePath, loadAuthEnvironment, localAuthStatus, saveAuthSession, validateUsername } from "./auth-session.js";
+import { monitorAuthErrorDetector } from "./monitor-auth.js";
+import { readMonitorProgress } from "./monitor-progress.js";
 
 loadAuthEnvironment();
 
@@ -13,6 +15,7 @@ const PORT = Number(process.env.MONITOR_API_PORT ?? "8787");
 const REQ_FILE = path.resolve(process.env.REQ_FILE ?? "reqs.txt");
 const ARTIFACTS_DIR = path.resolve(process.env.ARTIFACTS_DIR ?? "artifacts");
 const LOG_FILE = path.join(ARTIFACTS_DIR, "monitor.log");
+const PROGRESS_FILE = path.join(ARTIFACTS_DIR, "monitor-progress.jsonl");
 const RESULTS_FILE = path.join(ARTIFACTS_DIR, "monitor-results.json");
 const WEB_DIR = path.resolve("web");
 const SETTINGS_FILE = path.resolve(
@@ -41,6 +44,7 @@ type MonitorStatus = {
   startedAt: string | null;
   finishedAt: string | null;
   exitCode: number | null;
+  authRequired: boolean;
 };
 
 type MonitorSettings = {
@@ -59,6 +63,7 @@ const monitorStatus: MonitorStatus = {
   startedAt: null,
   finishedAt: null,
   exitCode: null,
+  authRequired: false,
 };
 
 function colombiaTime(date: Date): {
@@ -382,6 +387,8 @@ async function readBody(request: IncomingMessage): Promise<unknown> {
 function runMonitor(source = "manual"): boolean {
   if (child || activeTask) return false;
   fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
+  fs.writeFileSync(PROGRESS_FILE, "", { mode: 0o600 });
+  fs.chmodSync(PROGRESS_FILE, 0o600);
   const log = fs.createWriteStream(LOG_FILE, { flags: "a" });
   const tsxCli = path.resolve("node_modules/tsx/dist/cli.mjs");
 
@@ -389,16 +396,18 @@ function runMonitor(source = "manual"): boolean {
   monitorStatus.startedAt = new Date().toISOString();
   monitorStatus.finishedAt = null;
   monitorStatus.exitCode = null;
+  monitorStatus.authRequired = false;
   activeTask = "monitor";
   log.write(`\n[${monitorStatus.startedAt}] Inicio ${source}\n`);
 
   child = spawn(process.execPath, [tsxCli, "monitor-req.ts"], {
     cwd: process.cwd(),
-    env: process.env,
+    env: { ...process.env, MONITOR_PROGRESS_FILE: PROGRESS_FILE },
     stdio: ["ignore", "pipe", "pipe"],
   });
   child.stdout?.pipe(log, { end: false });
   child.stderr?.pipe(log, { end: false });
+  child.stderr?.on("data", monitorAuthErrorDetector(() => { monitorStatus.authRequired = true; }));
   child.on("error", (error) => log.write(`Error iniciando monitor: ${error.message}\n`));
   child.on("close", (code) => {
     monitorStatus.running = false;
@@ -512,6 +521,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       reqs: readReqs(),
       results: readResults(),
       monitor: { ...monitorStatus, activeTask },
+      progress: monitorStatus.startedAt
+        ? { startedAt: monitorStatus.startedAt, items: readMonitorProgress(PROGRESS_FILE) }
+        : null,
       schedule: {
         ...schedule,
         timeZone: MONITOR_TIME_ZONE,

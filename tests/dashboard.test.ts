@@ -50,6 +50,164 @@ test("Acceso displays only an unverified username label and local session availa
   assert.equal(fields.get("#credentials-username")?.value, "");
 });
 
+test("manual REQ query opens Acceso for authentication errors without showing CLI commands", async () => {
+  const button = { disabled: false, textContent: "Consultar REQ" };
+  const dialog = { open: false, shows: 0, showModal() { this.open = true; this.shows++; } };
+  const username = { focuses: 0, focus() { this.focuses++; } };
+  const messages: string[] = [];
+  let answer: { results?: object[]; error?: string; ok: boolean } = { ok: true };
+  const document = { querySelector: (selector: string) => ({
+    "#query-form": { querySelector: () => button },
+    "#credentials-dialog": dialog,
+    "#credentials-username": username,
+  } as Record<string, unknown>)[selector] ?? {} };
+  const fetch = async () => ({ ok: answer.ok, status: answer.ok ? 200 : 500,
+    json: async () => answer.error ? { error: answer.error } : { results: answer.results } });
+  const context = vm.createContext({ document, URL, console, fetch });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.queryReqForTest = queryReq; toast = (message) => messages.push(message); loadDashboard = async () => {};`,
+    Object.assign(context, { messages }));
+  const query = () => (context as { queryReqForTest: (req: string) => Promise<void> }).queryReqForTest("REQ123");
+
+  answer = { ok: true, results: [{ req: "REQ123", error: "No existe sesión. Ejecuta: pnpm run auth" }] };
+  await query();
+  assert.equal(dialog.open, true);
+  assert.doesNotMatch(messages.join(" "), /pnpm run auth|Consulta completada/);
+  await query();
+  assert.equal(dialog.shows, 1, "an open dialog must not be opened again");
+  assert.equal(username.focuses, 1);
+
+  dialog.open = false;
+  answer = { ok: false, error: "Sesión MiAsistencia360 expirada; usa Acceso" };
+  await query();
+  assert.equal(dialog.open, true);
+  assert.doesNotMatch(messages.join(" "), /usa Acceso|pnpm run auth/);
+
+  dialog.open = false;
+  answer = { ok: false, error: "Error: No existe /app/playwright/.auth/miasistencia.json. Ejecuta: pnpm run auth\n    at main (check-req.ts:513)" };
+  await query();
+  assert.equal(dialog.open, true, "CLI stderr propagated by the API must also open the dialog");
+  assert.doesNotMatch(messages.join(" "), /pnpm run auth/);
+
+  dialog.open = false;
+  answer = { ok: false, error: "Error de red al conectar al portal" };
+  await query();
+  assert.equal(dialog.open, false, "network failures must not be treated as expired sessions");
+  assert.match(messages.at(-1) ?? "", /Error de red/);
+
+  vm.runInContext("renderQueryResult = (result) => { this.lastQueryResult = result; }", context);
+  answer = { ok: true, results: [{ req: "REQ123", error: "REQ no disponible" }] };
+  await query();
+  assert.equal(dialog.open, false);
+  assert.equal(messages.at(-1), "No se pudo consultar la REQ");
+
+  answer = { ok: true, results: [{ req: "REQ123", status: "Abierta" }] };
+  await query();
+  assert.equal((context as { lastQueryResult?: { status: string } }).lastQueryResult?.status, "Abierta");
+  assert.equal(messages.at(-1), "Consulta completada");
+});
+
+test("completed monitor authentication failure opens Acceso once per run", () => {
+  const dialog = { open: false, shows: 0, showModal() { this.open = true; this.shows++; } };
+  const document = { querySelector: (selector: string) => selector === "#credentials-dialog" ? dialog :
+    selector === "#credentials-username" ? { focus() {} } : {} };
+  const messages: string[] = [];
+  const context = vm.createContext({ document, URL, console, messages });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.renderDashboardForTest = renderDashboard;
+    renderAuthStatus = () => {}; updateSummary = () => {}; updateMonitor = () => {}; renderRows = () => {};
+    toast = (message) => messages.push(message);`, context);
+  const render = (monitor: object) => (context as { renderDashboardForTest: (data: object) => void })
+    .renderDashboardForTest({ reqs: [], results: [], monitor, auth: {} });
+  render({ startedAt: "2026-11-05T15:00:00Z", running: true, authRequired: false });
+  assert.equal(dialog.shows, 0);
+  const failed = { startedAt: "2026-11-05T15:00:00Z", running: false, authRequired: true };
+  render(failed);
+  assert.equal(dialog.shows, 1);
+  dialog.open = false;
+  render(failed);
+  assert.equal(dialog.shows, 1, "polling must not reopen a dismissed credential dialog");
+  render({ startedAt: "2026-11-05T16:00:00Z", running: false, authRequired: false });
+  assert.equal(dialog.shows, 1);
+  render({ startedAt: "2026-11-05T17:00:00Z", running: false, authRequired: true });
+  assert.equal(dialog.shows, 2, "a later run must be actionable again");
+  assert.doesNotMatch(messages.join(" "), /pnpm run auth/);
+});
+
+test("per-REQ monitor progress distinguishes running, successful, failed and unvisited rows", () => {
+  const list = { innerHTML: "" };
+  const empty = { hidden: false };
+  const document = { querySelector: (selector: string) => selector === "#req-list" ? list :
+    selector === "#empty-state" ? empty : {} };
+  const context = vm.createContext({ document, URL, console });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;`, context);
+  const render = (items: object, running: boolean) => (context as {
+    renderRowsForTest: (reqs: string[], results: object[], progress: object, monitor: object) => void;
+  }).renderRowsForTest(["REQ101", "REQ102", "REQ103"],
+    [{ req: "REQ101", title: "Resultado anterior", checkedAt: "2026-11-04T10:00:00Z" }],
+    { startedAt: "2026-11-05T15:00:00Z", items }, { running, startedAt: "2026-11-05T15:00:00Z" });
+  render({ REQ101: "success", REQ102: "running" }, true);
+  assert.match(list.innerHTML, /Resultado anterior/);
+  assert.match(list.innerHTML, /REQ101[\s\S]*Consultada · resultados al finalizar/);
+  assert.match(list.innerHTML, /REQ102[\s\S]*En revisión/);
+  assert.match(list.innerHTML, /REQ103[\s\S]*Pendiente/);
+  render({ REQ101: "success", REQ102: "error" }, false);
+  assert.match(list.innerHTML, /REQ101[\s\S]*Revisada/);
+  assert.match(list.innerHTML, /REQ102[\s\S]*Error de revisión/);
+  assert.match(list.innerHTML, /REQ103[\s\S]*No revisada/);
+  assert.doesNotMatch(list.innerHTML, /REQ103[\s\S]*Error de revisión/);
+});
+
+test("dashboard alerts once for partial or total scan failures and not for clean runs", () => {
+  const messages: string[] = [];
+  const document = { querySelector: () => ({}) };
+  const context = vm.createContext({ document, URL, console, messages });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.renderDashboardForTest = renderDashboard;
+    renderAuthStatus = () => {}; updateSummary = () => {}; updateMonitor = () => {}; renderRows = () => {};
+    toast = (message) => messages.push(message);`, context);
+  const render = (startedAt: string, items: object, running: boolean, exitCode: number) =>
+    (context as { renderDashboardForTest: (data: object) => void }).renderDashboardForTest({
+      reqs: ["REQ101", "REQ102"], results: [], auth: {},
+      monitor: { startedAt, running, exitCode, authRequired: false },
+      progress: { startedAt, items },
+    });
+  render("run-1", { REQ101: "running" }, true, 0);
+  assert.equal(messages.length, 0);
+  render("run-1", { REQ101: "success", REQ102: "error" }, false, 1);
+  assert.match(messages.at(-1) ?? "", /1 de 2/);
+  render("run-1", { REQ101: "success", REQ102: "error" }, false, 1);
+  assert.equal(messages.length, 1);
+  render("run-2", { REQ101: "error" }, false, 1);
+  assert.match(messages.at(-1) ?? "", /ninguna REQ/i);
+  render("run-3", { REQ101: "success", REQ102: "success" }, false, 0);
+  assert.equal(messages.length, 2);
+});
+
+test("late dashboard response cannot replace newer monitor progress", async () => {
+  const rendered: string[] = [];
+  const pending: ((value: unknown) => void)[] = [];
+  const document = { querySelector: () => ({}) };
+  const fetch = () => new Promise((resolve) => pending.push(resolve));
+  const context = vm.createContext({ document, URL, console, fetch, rendered });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}
+    renderDashboard = (data) => rendered.push(data.monitor.startedAt);
+    this.loadDashboardForTest = loadDashboard;`, context);
+  const load = (context as { loadDashboardForTest: () => Promise<void> }).loadDashboardForTest;
+  const oldRequest = load();
+  const newRequest = load();
+  const response = (startedAt: string) => ({
+    ok: true, json: async () => ({ reqs: [], results: [], monitor: { startedAt }, auth: {} }),
+  });
+  pending[1](response("run-new"));
+  await newRequest;
+  pending[0](response("run-old"));
+  await oldRequest;
+  assert.deepEqual(rendered, ["run-new"]);
+});
+
 function dashboardHarness() {
   const html = fs.readFileSync("web/index.html", "utf8");
   const cell = { innerHTML: "" };
@@ -84,6 +242,17 @@ test("portal status is literal, independent of conversation status and unavailab
   ui.render({ conversationStatus: "Finalizada", status: null, microservices: [] });
   assert.match(ui.list.innerHTML, /Estado no disponible/);
   assert.doesNotMatch(ui.list.innerHTML, /Sin microservicio/);
+});
+
+test("manual REQ message separates the Operations reply from status and preserves safe line breaks", () => {
+  const ui = dashboardHarness();
+  ui.renderQuery({ status: "Asignado", latestOperationsComment: {
+    author: "Operaciones", text: "Primera línea\nSegunda <línea>", attachments: [],
+  } });
+  assert.match(ui.query.innerHTML, /Último comentario de Operaciones/);
+  assert.match(ui.query.innerHTML, /Primera línea\nSegunda &lt;línea&gt;/);
+  assert.doesNotMatch(ui.query.innerHTML, /<línea>/);
+  assert.match(ui.query.innerHTML, /Estado del portal/);
 });
 
 test("details reveal stored fields on demand and close when toggled or refreshed", () => {
