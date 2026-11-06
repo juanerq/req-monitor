@@ -181,6 +181,7 @@ function trimToTeamsLimit(message: string): string {
 function buildNotification(result: ReqResult): string {
   const comment = result.latestOperationsComment;
   const finalized = result.conversationStatus === "Finalizada";
+  const answered = result.conversationStatus === "Respondida";
   const attachments = comment?.attachments
     .map((attachment) =>
       attachment.url
@@ -193,6 +194,8 @@ function buildNotification(result: ReqResult): string {
     [
       finalized
         ? `REQ finalizada: ${result.req}`
+        : answered
+          ? `REQ respondida por el solicitante: ${result.req}`
         : `REQ pendiente de respuesta: ${result.req}`,
       result.title ? `Título: ${result.title}` : null,
       result.projectName?.trim() ? `Proyecto: ${result.projectName}` : null,
@@ -289,6 +292,8 @@ export async function processReqResult(
     (previous?.conversationStatus !== PENDING_STATUS || previous?.latestOperationsCommentKey !== currentCommentKey || !previous?.lastNotified);
   const finalizedAlert = result.conversationStatus === "Finalizada" &&
     (previous?.conversationStatus !== "Finalizada" || !previous?.lastNotified);
+  const answeredAlert = result.conversationStatus === "Respondida" &&
+    previous?.conversationStatus === PENDING_STATUS && Boolean(previous.lastNotified);
   const day = reminderDay(now);
   const deadline = result.activeDeadline;
   const awaitingDeadline = result.conversationStatus === PENDING_STATUS && deadline && day;
@@ -303,12 +308,12 @@ export async function processReqResult(
   };
 
   if (!notificationsEnabled && !dryRun) {
-    if (pendingAlert || finalizedAlert) delete next.lastNotified;
+    if (pendingAlert || finalizedAlert || answeredAlert) delete next.lastNotified;
     console.log(`${result.req}: ${result.conversationStatus}, notificaciones desactivadas`);
     return next;
   }
 
-  if (pendingAlert || finalizedAlert || reminder) {
+  if (pendingAlert || finalizedAlert || answeredAlert || reminder) {
     const message = reminder && deadline
       ? trimToTeamsLimit(`Recordatorio: REQ pendiente de respuesta: ${result.req}\nPlazo indicado: ${new Intl.DateTimeFormat("es-CO", {
         timeZone: "America/Bogota", dateStyle: "short", timeStyle: "short",
@@ -326,7 +331,7 @@ export async function processReqResult(
   return next;
 }
 
-function buildTeamsPayload(
+export function buildTeamsPayload(
   message: string,
   actionUrl: string,
   pullRequestUrls: string[],
@@ -334,13 +339,33 @@ function buildTeamsPayload(
   const [title, ...details] = message.split("\n");
   const isTest = title.startsWith("Prueba de notificación");
   const isFinalized = title.startsWith("REQ finalizada");
-  const style = isTest ? "accent" : isFinalized ? "good" : "attention";
-  const color = isTest ? "Accent" : isFinalized ? "Good" : "Attention";
+  const isAnswered = title.startsWith("REQ respondida por el solicitante");
+  const style = isTest ? "accent" : isFinalized || isAnswered ? "good" : "attention";
+  const color = isTest ? "Accent" : isFinalized || isAnswered ? "Good" : "Attention";
   const banner = isTest
     ? "✓ Integración activa"
     : isFinalized
       ? "✓ REQ finalizada"
+      : isAnswered
+        ? "✓ REQ respondida"
       : "⚠ Acción requerida";
+  const facts: { title: string; value: string }[] = [];
+  const paragraphs: string[] = [];
+  const headings = /^(Título|Proyecto|Microservicios?|Estado del portal|Operaciones|Última respuesta de Operaciones|Fecha|Plazo indicado):\s*(.+)$/;
+  for (const section of details.join("\n").split(/\n(?=Comentario:|Adjuntos:|Abrir REQ:)/)) {
+    if (section.startsWith("Abrir REQ:")) continue;
+    if (section.startsWith("Comentario:") || section.startsWith("Adjuntos:")) {
+      paragraphs.push(section.trim());
+      continue;
+    }
+    const leftover: string[] = [];
+    for (const line of section.split("\n")) {
+      const match = line.match(headings);
+      if (match) facts.push({ title: match[1], value: match[2] });
+      else if (line.trim()) leftover.push(line);
+    }
+    if (leftover.length) paragraphs.push(leftover.join("\n"));
+  }
   return {
     type: "message",
     attachments: [
@@ -374,12 +399,8 @@ function buildTeamsPayload(
               wrap: true,
               spacing: "Large",
             },
-            {
-              type: "TextBlock",
-              text: details.join("\n"),
-              wrap: true,
-              spacing: "Medium",
-            },
+            ...(facts.length ? [{ type: "FactSet", facts, spacing: "Medium" }] : []),
+            ...paragraphs.map((text) => ({ type: "TextBlock", text, wrap: true, spacing: "Medium", separator: true })),
             {
               type: "TextBlock",
               text: "MiAsistencia360 · Monitor automático de REQ",

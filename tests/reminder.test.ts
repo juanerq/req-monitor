@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { processReqResult, reminderDay } from "../monitor-req.ts";
+import { buildTeamsPayload, processReqResult, reminderDay } from "../monitor-req.ts";
 import { deriveCommentCycle } from "../deadline.ts";
 
 const due = { dueAt: "2026-10-10T04:59:00.000Z", sourceKey: "operations-cycle-1" };
@@ -10,6 +10,40 @@ const result = {
   latestOperationsComment: { author: "Operations", date: "9 oct 2026, 08:00", text: "Before 09/10/2026", attachments: [] },
   activeDeadline: due,
 };
+
+test("answered REQ sends a resolution update once after a pending Teams alert", async () => {
+  const sent: string[] = [];
+  const send = async (message: string) => { sent.push(message); };
+  const now = new Date("2026-10-09T13:15:00Z");
+  const pending = await processReqResult(result, undefined, now, false, send);
+  assert.equal(sent.length, 1);
+  const answered = { ...result, conversationStatus: "Respondida" as const, checkedAt: "2026-10-09T13:20:00.000Z" };
+  const resolved = await processReqResult(answered, pending, now, false, send);
+  assert.equal(sent.length, 2);
+  assert.match(sent[1], /^REQ respondida por el solicitante: REQ123/);
+  assert.equal(resolved.conversationStatus, "Respondida");
+  await processReqResult(answered, resolved, now, false, send);
+  assert.equal(sent.length, 2);
+  await processReqResult(answered, undefined, now, false, send);
+  assert.equal(sent.length, 2, "no resolution notice when no prior pending alert exists");
+});
+
+test("Teams card separates readable facts from comments and uses answered status", () => {
+  const payload = buildTeamsPayload(
+    "REQ respondida por el solicitante: REQ123\nTítulo: Seguimiento\nProyecto: Portal\nEstado del portal: En curso\n\nComentario:\nEl solicitante confirmó la respuesta.\n\nAbrir REQ: https://portal.example/req123",
+    "https://portal.example/req123", [],
+  ) as { attachments: { content: { body: { type: string; text?: string; facts?: { title: string; value: string }[] }[];
+    actions: { title: string; url: string }[] } }[] };
+  const card = payload.attachments[0].content;
+  assert.equal(card.body[0].text, "✓ REQ respondida");
+  assert.deepEqual(card.body.find((block) => block.type === "FactSet")?.facts, [
+    { title: "Título", value: "Seguimiento" }, { title: "Proyecto", value: "Portal" },
+    { title: "Estado del portal", value: "En curso" },
+  ]);
+  assert.ok(card.body.some((block) => block.text?.includes("El solicitante confirmó la respuesta.")));
+  assert.equal(card.actions[0].url, "https://portal.example/req123");
+  assert.ok(!card.body.some((block) => block.text?.includes("Abrir REQ:")), "avoid repeating action link in body");
+});
 
 test("morning uses Colombia's local day, not the host timezone or UTC day", () => {
   assert.equal(reminderDay(new Date("2026-10-09T12:59:59Z")), null);
