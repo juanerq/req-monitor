@@ -218,7 +218,14 @@ function readLockResults(): { req: string; status?: string | null; checkedAt?: s
 }
 
 function currentLockedReqs(configured = readReqs()): string[] {
-  return lockedFinalizedReqs(configured, readLockResults(), readSettings().unlockedFinalizedReqs ?? {});
+  let results: ReturnType<typeof readLockResults>;
+  try {
+    results = readLockResults();
+  } catch {
+    // Keep the dashboard readable without making any REQ selectable from corrupt results.
+    return configured;
+  }
+  return lockedFinalizedReqs(configured, results, readSettings().unlockedFinalizedReqs ?? {});
 }
 
 function currentEligibleReqs(configured = readReqs()): string[] {

@@ -12,7 +12,7 @@ S6. User: "Mejola la legibilidad de las tarjetas de teams". Scope: group card da
 
 ## Tasks
 T1 [S1] Route: inline (shared scheduler/settings behavior). Status: implementation written, functional proof pending; commit: efb431c; Risk: items 1, 4 (persisted settings and timer ordering).
-T2 [S2,S3] Route: inline (dashboard ordering and add-only readback). Status: implementation written, functional/visual proof pending; commit: pending; Risk: none.
+T2 [S2,S3] Route: inline (dashboard ordering and add-only readback). Status: implementation written, functional/visual proof pending; commit: 011cb15; Risk: none.
 T3 [S4,S6] Route: inline (notification state and presentation). Status: implementation written, functional proof pending; commit: 09fc99f; Risk: item 3 (Teams message contract).
 T4 [S5] Route: inline (Docker deployment after safe evidence). Status: pending; commit: pending; Risk: item 5 (deployment).
 
@@ -24,3 +24,4 @@ L4: Docker build using original Dockerfile offline failed at uncached Corepack d
 L5 (2026-11-06) User: "Mejola la legibilidad de las tarjetas de teams"
 L6: User authorized local, separate commits without push to enable review of smaller candidates. Committed AG Grid and details work as `30800a4` (amended after scoped review correction), helper work as `57012ca`, and Teams cards as `09fc99f`; all three received native review acknowledgements. Added labeled facts and separated comment blocks in Teams cards, plus an unrun payload regression test. The existing candidate image predates S6 and must be rebuilt before deployment.
 L7: Committed backend lock/interval and CLI selection as `efb431c`. Native review of this tranche escalated unknown causality for scheduled lock behavior (`R3-scheduled-lock-contract`) and corroborated a hard-stop on malformed persisted results (`R4-results-parse-hard-stop`); no approval. Functional proof remains unavailable under the no-tests instruction. The prior container is healthy and unchanged.
+L8: User declined native review of UI tranche `011cb15` for this candidate only. Independent verifier reproduced the R4 issue statically: malformed saved results made dashboard HTTP 500 while baseline dashboard remained readable. Corrected the dashboard-only lock read to expose all configured REQs as locked on invalid results; manual and scheduled execution still reject the saved data. Added unrun malformed-results regression; focused read-only recheck resolved R4, `pnpm typecheck` and `git diff --check` passed. Native R3 scheduled-lock causality remains inconclusive without runtime proof. Offline image `sha256:b06118f2b1efbb5818580b5a8a10177614f6a439010986ce70fff658090c983d` predates this R4 correction; rebuild before deployment. The previous container is still healthy and unchanged.

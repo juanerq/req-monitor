@@ -112,6 +112,20 @@ test("invalid manual selections never start the monitor or mutate saved data", a
       assert.equal((await (await fetch(`${base}/api/monitor/status`)).json()).running, false);
     }
     assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8")).intervalMinutes, 0);
+    for (const invalidResults of ["{", '[{"status":"Finalizado"}]']) {
+      fs.writeFileSync(files[1], invalidResults);
+      const unchanged = hash();
+      const dashboardResponse = await fetch(`${base}/api/dashboard`);
+      assert.equal(dashboardResponse.status, 200, "dashboard stays readable when stored results are corrupt");
+      assert.deepEqual((await dashboardResponse.json()).lockedReqs, ["REQ101", "REQ102", "REQ103"],
+        "corrupt results must not make any REQ selectable");
+      const refused = await fetch(`${base}/api/monitor/run`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reqs: ["REQ102"] }),
+      });
+      assert.notEqual(refused.status, 200, "manual runs must still fail closed");
+      assert.deepEqual(hash(), unchanged, "rejected run must not modify persisted data");
+      assert.equal((await (await fetch(`${base}/api/monitor/status`)).json()).running, false);
+    }
   } finally {
     if (child.exitCode === null && child.signalCode === null) {
       const exited = new Promise<void>((resolve) => child.once("exit", resolve));
