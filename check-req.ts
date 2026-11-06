@@ -7,6 +7,7 @@ import { conversationStatus, deriveCommentCycle, type ActiveDeadline } from "./d
 import { authFilePath, loadAuthEnvironment, saveAuthSession } from "./auth-session.js";
 import { extractPortalFieldsFromDom, parseReqDetails, type ReqDetails } from "./req-details.js";
 import { appendMonitorProgress } from "./monitor-progress.js";
+import { microservicesFromStaticAnalysisAttachments } from "./static-analysis-microservices.js";
 
 loadAuthEnvironment();
 const APP_URL =
@@ -492,6 +493,12 @@ async function inspectReq(page: Page, req: string): Promise<ReqResult> {
       responded,
       conversationStatus: status,
       ...data.details,
+      microservices: microservicesFromStaticAnalysisAttachments({
+        title: data.title,
+        requestType: data.details.requestDetails.requestType,
+        microservices: data.details.microservices,
+        attachments,
+      }),
       title: data.title,
       detailUrl,
       latestOperationsComment,

@@ -10,6 +10,8 @@
 !monitor-progress.ts
 !auth-session.ts
 !req-details.ts
+!static-analysis-microservices.ts
+!finalized-req-lock.ts
 !tsconfig.json
 !web
 !web/app.js
