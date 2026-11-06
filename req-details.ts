@@ -20,6 +20,8 @@ export function extractPortalFieldsFromDom(): {
     (element as HTMLElement).getClientRects().length > 0 &&
     !element.closest("dwp-comments, .comments__comment-block");
   const statusCandidates: string[] = [];
+  const labeledStatuses: string[] = [];
+  const mediaStatuses: string[] = [];
   if (detailContainers.length > 0) {
     for (const wrapper of document.querySelectorAll('[data-ta="headlineItemWrapper"]')) {
       if (!isVisibleHeader(wrapper)) continue;
@@ -28,15 +30,21 @@ export function extractPortalFieldsFromDom(): {
       if (labels.length !== 1 || !/^(?:Status|Estado):?$/i.test(clean(visibleText(labels[0])))) continue;
       const values = [...wrapper.querySelectorAll("p.headline-item__description")].filter(isVisibleHeader);
       if (values.length !== 1) {
-        statusCandidates.push(""); // Ambiguous labeled header must not yield a status.
+        labeledStatuses.push(""); // Ambiguous labeled header must not yield a status.
         continue;
       }
-      statusCandidates.push(clean(visibleText(values[0])));
+      labeledStatuses.push(clean(visibleText(values[0])));
     }
     for (const element of document.querySelectorAll('p[data-ta="coloredMediaHeaderParagraph_0"]')) {
-      if (isVisibleHeader(element)) statusCandidates.push(clean(visibleText(element)));
+      if (isVisibleHeader(element)) mediaStatuses.push(clean(visibleText(element)));
     }
   }
+  // The generic media paragraph can describe the request rather than its status.
+  // Still reject a contradiction when it explicitly names another status.
+  const recognizableStatus = /^(?:pendiente|pending|abiert[oa]|open|en curso|in progress|asignad[oa]|assigned|en validaci[oó]n|finalizad[oa]|completed|closed|cerrad[oa]|rechazad[oa]|rejected|cancelad[oa]|cancelled)(?:\b|$)/i;
+  statusCandidates.push(...labeledStatuses);
+  if (labeledStatuses.length === 0) statusCandidates.push(...mediaStatuses);
+  else statusCandidates.push(...mediaStatuses.filter((value) => recognizableStatus.test(value)));
   if (statusCandidates.length > 0 && statusCandidates.every((value) => value === statusCandidates[0])) {
     fields.push({ label: "Status", value: statusCandidates[0] });
   }

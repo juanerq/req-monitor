@@ -1,19 +1,18 @@
 const state = {
-  dashboard: null, visibleResults: [], filters: { text: "", status: "all" },
+  dashboard: null, resultsByReq: new Map(),
   accessPromptedRun: null, alertedMonitorRun: null,
 };
 let dashboardRequestSequence = 0;
+let progressPollTimer = null;
 
 const elements = {
-  list: document.querySelector("#req-list"),
+  list: document.querySelector("#req-grid"),
   empty: document.querySelector("#empty-state"),
   run: document.querySelector("#run-button"),
   refresh: document.querySelector("#refresh-button"),
   addForm: document.querySelector("#add-form"),
   queryForm: document.querySelector("#query-form"),
   queryResult: document.querySelector("#query-result"),
-  filterText: document.querySelector("#filter-text"),
-  filterStatus: document.querySelector("#filter-status"),
   filterCount: document.querySelector("#filter-count"),
   credentialsButton: document.querySelector("#credentials-button"),
   credentialsDialog: document.querySelector("#credentials-dialog"),
@@ -37,6 +36,17 @@ function safeUrl(value) {
   } catch {
     return "#";
   }
+}
+
+const actionIcons = {
+  details: '<path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z"/><circle cx="12" cy="12" r="2.5"/>',
+  query: '<path d="M20 11a8 8 0 0 0-14-4L4 9m0-5v5h5M4 13a8 8 0 0 0 14 4l2-2m0 5v-5h-5"/>',
+  delete: '<path d="M4 7h16M10 4h4M6 7l1 13h10l1-13M10 11v6m4-6v6"/>',
+  portal: '<path d="M13 5h6v6m0-6-9 9m9-1v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/>',
+};
+
+function actionIcon(name) {
+  return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${actionIcons[name]}</svg>`;
 }
 
 function statusClass(status) {
@@ -96,6 +106,30 @@ function toast(message) {
   toast.timeout = window.setTimeout(() => elements.toast.classList.remove("visible"), 3500);
 }
 
+async function copyReq(req) {
+  let copied = false;
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(req);
+      copied = true;
+    }
+  } catch { /* Fall back for browsers without clipboard permission. */ }
+  if (!copied && typeof document.execCommand === "function") {
+    const source = document.createElement("textarea");
+    const previousFocus = document.activeElement;
+    source.className = "clipboard-source";
+    source.value = req;
+    document.body.append(source);
+    source.select();
+    try { copied = document.execCommand("copy"); } catch { /* Report the failure below. */ }
+    finally {
+      source.remove();
+      previousFocus?.focus?.();
+    }
+  }
+  toast(copied ? `${req} copiada al portapapeles` : `No se pudo copiar ${req}. Revisá los permisos del navegador.`);
+}
+
 function isAccessError(message) {
   const text = String(message ?? "").trim();
   return /(?:^|[\r\n])(?:Error: |REQ\d+: )?La sesión expiró\.(?:[\r\n]|$)/i.test(text) ||
@@ -138,7 +172,7 @@ function updateSummary(reqs, results) {
   document.querySelector("#count-finished").textContent = count("Finalizada");
 }
 
-function updateMonitor(monitor, schedule) {
+function updateMonitor(monitor, schedule, progress, reqs) {
   const busy = Boolean(monitor.activeTask);
   const label = monitor.activeTask === "query"
     ? "Consultando REQ"
@@ -150,11 +184,18 @@ function updateMonitor(monitor, schedule) {
           ? "Monitor disponible"
           : "Fuera de horario";
   document.querySelector("#monitor-label").textContent = label;
-  document.querySelector("#monitor-time").textContent = !busy && schedule && !schedule.allowed
-    ? schedule.reason
-    : monitor.finishedAt
-      ? `Última ejecución: ${formatDate(monitor.finishedAt)}`
-      : "Aún sin ejecución registrada";
+  const currentProgress = monitor?.running && progress?.startedAt === monitor.startedAt;
+  const analyzed = currentProgress ? reqs.filter((req) => progress.items?.[req] === "success").length : 0;
+  const activeReq = currentProgress ? reqs.find((req) => progress.items?.[req] === "running") : null;
+  const monitorTime = currentProgress
+    ? `Analizadas ${analyzed} de ${reqs.length}${activeReq ? ` · Ahora: ${activeReq}` : ""}`
+    : !busy && schedule && !schedule.allowed
+      ? schedule.reason
+      : monitor.finishedAt
+        ? `Última ejecución: ${formatDate(monitor.finishedAt)}`
+        : "Aún sin ejecución registrada";
+  const timeElement = document.querySelector("#monitor-time");
+  if (timeElement.textContent !== monitorTime) timeElement.textContent = monitorTime;
   const scheduledAccess = schedule?.allowed !== false;
   document.querySelector("#status-dot").className = `status-dot ${busy ? "running" : scheduledAccess ? "ready" : "off"}`;
   elements.run.disabled = busy || !scheduledAccess;
@@ -165,86 +206,112 @@ function portalStatusLabel(result) {
   return result?.status?.trim() ? result.status : "Estado no disponible";
 }
 
-function matchesFilters(req, result) {
-  const needle = String(state.filters.text ?? "").trim().toLowerCase();
-  if (needle) {
-    const microservices = Array.isArray(result?.microservices) ? result.microservices.filter(Boolean).join(" ") : "";
-    const project = result?.projectName?.trim() ? result.projectName : "";
-    if (!`${req} ${project} ${microservices}`.toLowerCase().includes(needle)) return false;
-  }
-  if (state.filters.status !== "all" && portalStatusLabel(result) !== state.filters.status) return false;
-  return true;
-}
-
-function syncStatusOptions(results) {
-  const select = elements.filterStatus;
-  if (!select || typeof select.innerHTML === "undefined") return;
-  const seen = new Set();
-  for (const result of results || []) {
-    const label = portalStatusLabel(result);
-    if (label !== "Estado no disponible") seen.add(label);
-  }
-  const options = ["all", "Estado no disponible", ...[...seen].sort((a, b) => a.localeCompare(b, "es"))];
-  select.innerHTML = options.map((value) => {
-    const label = value === "all" ? "Todos los estados" : value;
-    const selected = state.filters.status === value ? " selected" : "";
-    return `<option value="${escapeHtml(value)}"${selected}>${escapeHtml(label)}</option>`;
-  }).join("");
-  if ("value" in select) select.value = state.filters.status;
+function portalStatusTone(result) {
+  const status = result?.status?.trim().toLowerCase();
+  if (!status) return "unavailable";
+  if (/^(pendiente|pending)(\b|$)/.test(status)) return "warning";
+  if (/^(rechazad[oa]|rejected|cancelad[oa]|cancelled)(\b|$)/.test(status)) return "danger";
+  if (/^(finalizad[oa]|completad[oa]|completed|closed|cerrad[oa])(\b|$)/.test(status)) return "success";
+  if (/^(en curso|in progress|asignad[oa]|assigned)(\b|$)/.test(status)) return "info";
+  return "neutral";
 }
 
 function updateFilterCount(total, shown) {
   if (elements.filterCount) elements.filterCount.textContent = `Mostrando ${shown} de ${total}`;
 }
 
+const gridOptions = {
+  styleNonce: document.querySelector('meta[name="ag-grid-style-nonce"]')?.getAttribute?.("content"),
+  theme: typeof agGrid !== "undefined" ? agGrid.themeQuartz.withParams({ browserColorScheme: "dark", accentColor: "#efb64d", backgroundColor: "#111b23", foregroundColor: "#edf4f4" }) : undefined,
+  columnDefs: [
+    { headerName: "Proyecto / Microservicio / REQ", field: "req", minWidth: 250, flex: 2, autoHeight: true,
+      filterValueGetter: ({ data }) => data ? [data.req, data.project, data.microservices].join(" ") : "",
+      cellRenderer: ({ data }) => {
+        if (!data) return "";
+        return `<div class="req-identity"><span class="req-project">${escapeHtml(data.project)}</span>${data.microservices ? `<span class="req-service">${escapeHtml(data.microservices)}</span>` : ""}<div class="req-id-line"><button class="req-number req-copy" data-copy="${escapeHtml(data.req)}" type="button" aria-label="Copiar ${escapeHtml(data.req)}" title="Copiar número de REQ">${escapeHtml(data.req)}</button>${data.monitorProgress ? `<span class="monitor-progress ${data.progressClass}" aria-label="Monitoreo: ${data.monitorProgress}">${data.monitorProgress}</span>` : ""}</div></div>`;
+      } },
+    { headerName: "Estado del portal", field: "status", minWidth: 170, flex: 1,
+      cellRenderer: ({ data }) => data ? `<span class="badge portal-status ${portalStatusTone(data.result)}">${escapeHtml(data.status)}</span>` : "" },
+    { headerName: "Detalle", field: "detail", minWidth: 250, flex: 2,
+      cellRenderer: ({ data }) => data ? `<div class="req-title">${escapeHtml(data.detail)}</div>` : "" },
+    { headerName: "Plazo y revisión", field: "checkedAt", minWidth: 230, flex: 1, autoHeight: true,
+      comparator: (a, b) => (Date.parse(a) || 0) - (Date.parse(b) || 0),
+      filterValueGetter: ({ data }) => data ? [data.deadline, formatDate(data.checkedAt), data.checkedAt, data.progressLabel].join(" ") : "",
+      cellRenderer: ({ data }) => data ? `<div class="req-review">
+        <div class="req-review-line"><span class="req-review-label">Plazo:</span> ${escapeHtml(data.deadline)}</div>
+        <div class="req-review-line"><span class="req-review-label">Última revisión:</span> ${escapeHtml(formatDate(data.checkedAt))}${data.progressLabel
+          ? `<span class="review-indicator ${data.progressClass}" role="img" aria-label="Monitoreo: ${escapeHtml(data.progressLabel)}" title="Monitoreo: ${escapeHtml(data.progressLabel)}"></span>` : ""}</div>
+      </div>` : "" },
+    { headerName: "Acciones", colId: "actions", minWidth: 205, sortable: false, filter: false, autoHeight: true,
+      cellRenderer: ({ data }) => {
+        if (!data) return "";
+        const url = data.result?.detailUrl ? safeUrl(data.result.detailUrl) : "#";
+        const portal = url === "#"
+          ? `<button class="secondary icon-action" type="button" aria-label="Enlace de MiAsistencia360 no disponible" title="Enlace no disponible" disabled>${actionIcon("portal")}</button>`
+          : `<a class="secondary icon-action" href="${url}" target="_blank" rel="noopener noreferrer" aria-label="Abrir ${escapeHtml(data.req)} en MiAsistencia360" title="Abrir en MiAsistencia360">${actionIcon("portal")}</a>`;
+        return `<div class="row-actions">
+          <button class="secondary icon-action" data-details="${escapeHtml(data.req)}" type="button" aria-expanded="false" aria-label="Ver detalles de ${escapeHtml(data.req)}" title="Ver detalles">${actionIcon("details")}</button>
+          <button class="secondary icon-action" data-query="${escapeHtml(data.req)}" type="button" aria-label="Consultar ${escapeHtml(data.req)}" title="Consultar">${actionIcon("query")}</button>
+          ${portal}
+          <button class="danger-button icon-action" data-delete="${escapeHtml(data.req)}" type="button" aria-label="Borrar ${escapeHtml(data.req)}" title="Borrar">${actionIcon("delete")}</button>
+        </div><div class="grid-details" hidden></div>`;
+      } },
+  ],
+  defaultColDef: { sortable: true, filter: true, resizable: true },
+  getRowId: ({ data }) => data.req,
+  pagination: true,
+  paginationPageSize: 10,
+  paginationPageSizeSelector: [10, 25, 50],
+  animateRows: false,
+  domLayout: "autoHeight",
+  rowHeight: 84,
+  localeText: { noRowsToShow: "No hay REQ para mostrar", page: "Página", of: "de", to: "a", filterOoo: "Filtrar...", contains: "Contiene", equals: "Igual a" },
+  onModelUpdated: () => updateGridCount(),
+};
+let gridApi = typeof agGrid !== "undefined" && agGrid.createGrid
+  ? agGrid.createGrid(elements.list, gridOptions) : null;
+
+function updateGridCount() {
+  if (!gridApi || !state.dashboard) return;
+  const shown = gridApi.getDisplayedRowCount();
+  updateFilterCount(state.dashboard.reqs.length, shown);
+  elements.empty.hidden = state.dashboard.reqs.length > 0 && shown > 0;
+  elements.empty.textContent = state.dashboard.reqs.length ? "Sin coincidencias para los filtros aplicados." : "No hay REQ configuradas.";
+}
+
 function renderRows(reqs, results, progress = null, monitor = null) {
   const byReq = new Map(results.map((result) => [result.req, result]));
-  const entries = reqs
-    .map((req) => ({ req, result: byReq.get(req) || null }))
-    .filter(({ req, result }) => matchesFilters(req, result));
-  syncStatusOptions(results);
-  updateFilterCount(reqs.length, entries.length);
-  state.visibleResults = entries.map(({ result }) => result);
-  if (reqs.length === 0) {
-    elements.empty.textContent = "No hay REQ configuradas.";
+  state.resultsByReq = byReq;
+  if (!gridApi) {
     elements.empty.hidden = false;
-  } else if (entries.length === 0) {
-    elements.empty.textContent = "Sin coincidencias para los filtros aplicados.";
-    elements.empty.hidden = false;
-  } else {
-    elements.empty.hidden = true;
+    elements.empty.textContent = "Tabla no disponible. Actualizá la página para volver a cargar AG Grid.";
+    updateFilterCount(reqs.length, 0);
+    return;
   }
-  elements.list.innerHTML = entries.map(({ req, result }, index) => {
-    const status = result?.status?.trim() ? result.status : "Estado no disponible";
-    const reqLink = result?.detailUrl
-      ? `<a class="req-number" href="${safeUrl(result.detailUrl)}" target="_blank" rel="noopener noreferrer">${escapeHtml(req)}</a>`
-      : `<span class="req-number">${escapeHtml(req)}</span>`;
-    const microservices = Array.isArray(result?.microservices) ? result.microservices.filter(Boolean).join(", ") : "";
-    const project = result?.projectName?.trim() ? result.projectName : "Proyecto no disponible";
-    const detail = webError(result?.error) || result?.title || "Información no disponible";
+  const rowData = reqs.map((req) => {
+    const result = byReq.get(req) || null;
     const inRun = progress?.startedAt && progress.startedAt === monitor?.startedAt;
     const checked = inRun ? progress.items?.[req] : null;
-    const progressLabel = !inRun ? "" : checked === "running" ? "En revisión" :
-      checked === "success" ? monitor?.running ? "Consultada · resultados al finalizar" : "Revisada" :
-        checked === "error" ? "Error de revisión" :
-        monitor?.running ? "Pendiente" : "No revisada";
-    const progressClass = checked === "running" ? "running" : checked === "success" ? "success" :
-      checked === "error" ? "error" : "waiting";
-    return `<tr>
-      <td><div class="req-identity"><span class="req-project">${escapeHtml(project)}</span>${microservices ? `<span class="req-service">${escapeHtml(microservices)}</span>` : ""}${reqLink}</div></td>
-      <td><span class="badge">${escapeHtml(status)}</span></td>
-      <td class="deadline-cell" data-label="Plazo indicado">${escapeHtml(statedDeadline(result))}</td>
-      <td><div class="req-title">${escapeHtml(detail)}</div>${progressLabel
-        ? `<span class="req-progress ${progressClass}" role="status">${progressLabel}</span>` : ""}</td>
-      <td>${escapeHtml(formatDate(result?.checkedAt))}</td>
-      <td><div class="row-actions">
-        <button class="secondary" data-details="${index}" type="button" aria-expanded="false" aria-controls="req-details-${index}" aria-label="Ver detalles de ${escapeHtml(req)}">Ver detalles</button>
-        <button class="secondary" data-query="${escapeHtml(req)}" type="button">Consultar</button>
-        <button class="danger-button" data-delete="${escapeHtml(req)}" type="button">Borrar</button>
-      </div></td>
-    </tr><tr class="detail-row" id="req-details-${index}" data-detail-panel="${index}" hidden><td colspan="6"></td>
-    </tr>`;
-  }).join("");
+    return {
+      req, result,
+      project: result?.projectName?.trim() || "Proyecto no disponible",
+      microservices: Array.isArray(result?.microservices) ? result.microservices.filter(Boolean).join(", ") : "",
+      status: portalStatusLabel(result), deadline: statedDeadline(result),
+      detail: webError(result?.error) || result?.title || "Información no disponible",
+      checkedAt: result?.checkedAt || null,
+      monitorProgress: monitor?.running && inRun
+        ? checked === "running" ? "Analizando" : checked === "success" ? "Analizada" :
+          checked === "error" ? "Error" : "En espera"
+        : "",
+      progressLabel: !inRun ? "" : checked === "running" ? "En revisión" :
+        checked === "success" ? monitor?.running ? "Consultada · resultados al finalizar" : "Revisada" :
+          checked === "error" ? "Error de revisión" : monitor?.running ? "Pendiente" : "No revisada",
+      progressClass: checked === "running" ? "running" : checked === "success" ? "success" :
+        checked === "error" ? "error" : "waiting",
+    };
+  });
+  gridApi.setGridOption("rowData", rowData);
+  updateGridCount();
 }
 
 function available(value) {
@@ -281,24 +348,28 @@ function renderStoredDetails(result) {
 }
 
 function toggleDetails(button) {
-  const index = Number(button.dataset.details);
-  if (!Number.isInteger(index) || index < 0 || index >= state.visibleResults.length) return;
-  const panel = elements.list.querySelector(`[data-detail-panel="${index}"]`);
+  const req = button.dataset.details;
+  const result = state.resultsByReq.get(req);
+  if (!result) return;
+  const panel = button.parentElement?.nextElementSibling;
   if (!panel) return;
   const open = panel.hidden;
   panel.hidden = !open;
-  panel.querySelector("td").innerHTML = open ? renderStoredDetails(state.visibleResults[index]) : "";
+  panel.innerHTML = open ? renderStoredDetails(result) : "";
   button.setAttribute("aria-expanded", String(open));
-  button.textContent = open ? "Ocultar detalles" : "Ver detalles";
-  button.setAttribute("aria-label", `${button.textContent} de ${state.visibleResults[index]?.req || "la REQ"}`);
+  const label = open ? "Ocultar detalles" : "Ver detalles";
+  button.setAttribute("aria-label", `${label} de ${req}`);
+  button.title = label;
+  gridApi?.resetRowHeights();
 }
 
 function renderDashboard(data) {
   state.dashboard = data;
   renderAuthStatus(data.auth);
   updateSummary(data.reqs, data.results);
-  updateMonitor(data.monitor, data.schedule);
+  updateMonitor(data.monitor, data.schedule, data.progress, data.reqs);
   renderRows(data.reqs, data.results, data.progress, data.monitor);
+  updateProgressPolling(Boolean(data.monitor?.running));
   const monitor = data.monitor;
   if (monitor?.startedAt && !monitor.running && monitor.exitCode !== null &&
     data.progress?.startedAt === monitor.startedAt && state.alertedMonitorRun !== monitor.startedAt) {
@@ -336,6 +407,20 @@ async function loadDashboard(silent = false) {
   } catch (error) {
     if (!silent && request === dashboardRequestSequence) toast(error.message);
   }
+}
+
+function updateProgressPolling(running) {
+  if (!running) {
+    if (progressPollTimer !== null) window.clearTimeout(progressPollTimer);
+    progressPollTimer = null;
+    return;
+  }
+  if (progressPollTimer !== null) return;
+  progressPollTimer = window.setTimeout(async () => {
+    progressPollTimer = null;
+    await loadDashboard(true);
+    if (state.dashboard?.monitor?.running) updateProgressPolling(true);
+  }, 2_000);
 }
 
 function renderQueryResult(result) {
@@ -469,6 +554,7 @@ async function queryReq(req) {
     const data = await api("/api/reqs/query", { method: "POST", body: JSON.stringify({ req }) });
     if (!handleAccessError(data.results[0]?.error)) {
       renderQueryResult(data.results[0]);
+      elements.queryResult.scrollIntoView?.({ behavior: "smooth", block: "start" });
       toast(data.results[0]?.error ? "No se pudo consultar la REQ" : "Consulta completada");
     }
   } catch (error) {
@@ -541,6 +627,11 @@ elements.queryResult.addEventListener("click", (event) => {
 });
 
 elements.list.addEventListener("click", async (event) => {
+  const copyButton = event.target.closest("[data-copy]");
+  if (copyButton) {
+    await copyReq(copyButton.dataset.copy);
+    return;
+  }
   const detailsButton = event.target.closest("[data-details]");
   if (detailsButton) {
     toggleDetails(detailsButton);
@@ -571,19 +662,6 @@ elements.run.addEventListener("click", async () => {
 
 elements.refresh.addEventListener("click", () => loadDashboard());
 
-function applyLocalFilters() {
-  if (state.dashboard) renderRows(state.dashboard.reqs, state.dashboard.results);
-}
-
-elements.filterText.addEventListener("input", (event) => {
-  state.filters.text = event.target.value;
-  applyLocalFilters();
-});
-
-elements.filterStatus.addEventListener("change", (event) => {
-  state.filters.status = event.target.value;
-  applyLocalFilters();
-});
 async function start() {
   try {
     await loadDashboard();
@@ -593,4 +671,6 @@ async function start() {
 }
 
 start();
-window.setInterval(() => loadDashboard(true), 15_000);
+window.setInterval(() => {
+  if (!state.dashboard?.monitor?.running) loadDashboard(true);
+}, 15_000);

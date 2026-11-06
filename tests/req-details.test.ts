@@ -106,6 +106,28 @@ test("observed portal definition list and status header yield only scoped fields
   }
 });
 
+test("labeled Pending status survives a non-status media heading", async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    await page.setContent(`<dwp-event-details>
+      <div data-ta="headlineItemWrapper"><h3>Estado</h3><p class="headline-item__description">Pending</p></div>
+      <p data-ta="coloredMediaHeaderParagraph_0">Request category descriptor</p>
+    </dwp-event-details>`);
+    await page.evaluate("globalThis.__name = (target) => target");
+    assert.equal(parseReqDetails(await page.evaluate(extractPortalFieldsFromDom)).status, "Pending");
+    for (const media of ["Finalizada", "Cancelada", "Cancelled", "Rechazada", "Rejected"]) {
+      await page.setContent(`<dwp-event-details>
+        <div data-ta="headlineItemWrapper"><h3>Estado</h3><p class="headline-item__description">Pending</p></div>
+        <p data-ta="coloredMediaHeaderParagraph_0">${media}</p>
+      </dwp-event-details>`);
+      assert.equal(parseReqDetails(await page.evaluate(extractPortalFieldsFromDom)).status, null, media);
+    }
+  } finally {
+    await browser.close();
+  }
+});
+
 test("observed phone labels require structural event detail pairs", async () => {
   const browser = await chromium.launch();
   try {

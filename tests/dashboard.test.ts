@@ -3,13 +3,80 @@ import fs from "node:fs";
 import vm from "node:vm";
 import { test } from "node:test";
 
-test("monitored table labels the stated deadline without claiming verified closure", () => {
+function mockGrid(list: { innerHTML: string }) {
+  let options: { columnDefs: { field?: string; cellRenderer?: (params: { data: any }) => string }[]; onModelUpdated?: () => void };
+  let rows: any[] = [];
+  let quick = "";
+  let status = "all";
+  const displayed = () => rows.filter((row) =>
+    (!quick || `${row.req} ${row.project} ${row.microservices}`.toLowerCase().includes(quick.toLowerCase())) &&
+    (status === "all" || row.status === status));
+  const redraw = () => {
+    list.innerHTML = displayed().map((row) => options.columnDefs.map((col) =>
+      col.cellRenderer ? col.cellRenderer({ data: row }) : String(row[col.field || ""] ?? "")).join(" ")).join("\n");
+    options.onModelUpdated?.();
+  };
+  const api = {
+    setGridOption(name: string, value: any) {
+      if (name === "rowData") rows = value;
+      if (name === "quickFilterText") quick = value;
+      redraw();
+    },
+    setColumnFilterModel: async (_column: string, model: { filter: string } | null) => { status = model?.filter ?? "all"; },
+    onFilterChanged: redraw,
+    getDisplayedRowCount: () => displayed().length,
+    resetRowHeights() {},
+  };
+  return { agGrid: { themeQuartz: { withParams: () => ({}) }, createGrid: (_el: unknown, config: typeof options) => { options = config; return api; } }, api };
+}
+
+test("REQ table uses AG Grid Community for sorting, column filtering and pagination", () => {
   const html = fs.readFileSync("web/index.html", "utf8");
-  assert.match(html, /Plazo indicado/);
+  assert.match(html, /src="\/ag-grid-community\.min\.js"/);
+  assert.match(html, /id="req-grid"/);
+  assert.doesNotMatch(html, /<tbody id="req-list"/);
+  const grid = { innerHTML: "" };
+  let options: Record<string, unknown> | undefined;
+  const agGrid = { themeQuartz: { withParams: () => ({}) }, createGrid: (_element: unknown, config: Record<string, unknown>) => {
+    options = config;
+    return { setGridOption() {}, setColumnFilterModel: async () => {}, onFilterChanged() {}, getDisplayedRowCount: () => 0 };
+  } };
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? grid : ({}) };
+  const context = vm.createContext({ document, URL, console, agGrid });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(script, context);
+  assert.ok(options);
+  assert.equal(options.pagination, true);
+  assert.equal((options.defaultColDef as { sortable: boolean; filter: boolean }).sortable, true);
+  assert.equal((options.defaultColDef as { sortable: boolean; filter: boolean }).filter, true);
+  assert.ok((options.columnDefs as { headerName: string }[]).some((column) => column.headerName === "Estado del portal"));
+});
+
+test("dashboard remains usable when the AG Grid asset cannot load", () => {
+  const fields = new Map<string, { textContent: string; hidden: boolean; disabled: boolean }>();
+  const document = { querySelector: (selector: string) => {
+    if (!fields.has(selector)) fields.set(selector, { textContent: "", hidden: true, disabled: false });
+    return fields.get(selector);
+  } };
+  const context = vm.createContext({ document, URL, console });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.updateSummaryForTest = updateSummary;`, context);
+  const ui = context as { renderRowsForTest: (reqs: string[], results: object[]) => void; updateSummaryForTest: (reqs: string[], results: object[]) => void };
+  ui.updateSummaryForTest(["REQ123"], [{ req: "REQ123", conversationStatus: "Respondida" }]);
+  ui.renderRowsForTest(["REQ123"], [{ req: "REQ123", status: "Pending" }]);
+  assert.equal(fields.get("#count-total")?.textContent, 1);
+  assert.equal(fields.get("#count-answered")?.textContent, 1);
+  assert.equal(fields.get("#empty-state")?.hidden, false);
+  assert.match(fields.get("#empty-state")?.textContent ?? "", /tabla.*no disponible/i);
+});
+
+test("monitored table labels the stated deadline without claiming verified closure", () => {
+  const source = fs.readFileSync("web/app.js", "utf8");
+  assert.match(source, /headerName: "Plazo indicado"/);
   const list = { innerHTML: "" };
   const empty = { hidden: false };
-  const document = { querySelector: (selector: string) => selector === "#req-list" ? list : selector === "#empty-state" ? empty : {} };
-  const context = vm.createContext({ document, URL, console });
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : selector === "#empty-state" ? empty : {} };
+  const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;`, context);
   const render = (result: object) => {
@@ -32,7 +99,7 @@ test("Acceso displays only an unverified username label and local session availa
     if (!fields.has(selector)) fields.set(selector, { textContent: "", value: "" });
     return fields.get(selector);
   } };
-  const context = vm.createContext({ document, URL, console });
+  const context = vm.createContext({ document, URL, console, agGrid: mockGrid({ innerHTML: "" }).agGrid });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderAuthStatusForTest = renderAuthStatus;`, context);
   const render = (context as { renderAuthStatusForTest: (auth: object) => void }).renderAuthStatusForTest;
@@ -63,7 +130,7 @@ test("manual REQ query opens Acceso for authentication errors without showing CL
   } as Record<string, unknown>)[selector] ?? {} };
   const fetch = async () => ({ ok: answer.ok, status: answer.ok ? 200 : 500,
     json: async () => answer.error ? { error: answer.error } : { results: answer.results } });
-  const context = vm.createContext({ document, URL, console, fetch });
+  const context = vm.createContext({ document, URL, console, fetch, agGrid: mockGrid({ innerHTML: "" }).agGrid });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.queryReqForTest = queryReq; toast = (message) => messages.push(message); loadDashboard = async () => {};`,
     Object.assign(context, { messages }));
@@ -112,7 +179,7 @@ test("completed monitor authentication failure opens Acceso once per run", () =>
   const document = { querySelector: (selector: string) => selector === "#credentials-dialog" ? dialog :
     selector === "#credentials-username" ? { focus() {} } : {} };
   const messages: string[] = [];
-  const context = vm.createContext({ document, URL, console, messages });
+  const context = vm.createContext({ document, URL, console, messages, agGrid: mockGrid({ innerHTML: "" }).agGrid });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderDashboardForTest = renderDashboard;
     renderAuthStatus = () => {}; updateSummary = () => {}; updateMonitor = () => {}; renderRows = () => {};
@@ -137,9 +204,9 @@ test("completed monitor authentication failure opens Acceso once per run", () =>
 test("per-REQ monitor progress distinguishes running, successful, failed and unvisited rows", () => {
   const list = { innerHTML: "" };
   const empty = { hidden: false };
-  const document = { querySelector: (selector: string) => selector === "#req-list" ? list :
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list :
     selector === "#empty-state" ? empty : {} };
-  const context = vm.createContext({ document, URL, console });
+  const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;`, context);
   const render = (items: object, running: boolean) => (context as {
@@ -162,7 +229,7 @@ test("per-REQ monitor progress distinguishes running, successful, failed and unv
 test("dashboard alerts once for partial or total scan failures and not for clean runs", () => {
   const messages: string[] = [];
   const document = { querySelector: () => ({}) };
-  const context = vm.createContext({ document, URL, console, messages });
+  const context = vm.createContext({ document, URL, console, messages, agGrid: mockGrid({ innerHTML: "" }).agGrid });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderDashboardForTest = renderDashboard;
     renderAuthStatus = () => {}; updateSummary = () => {}; updateMonitor = () => {}; renderRows = () => {};
@@ -190,7 +257,7 @@ test("late dashboard response cannot replace newer monitor progress", async () =
   const pending: ((value: unknown) => void)[] = [];
   const document = { querySelector: () => ({}) };
   const fetch = () => new Promise((resolve) => pending.push(resolve));
-  const context = vm.createContext({ document, URL, console, fetch, rendered });
+  const context = vm.createContext({ document, URL, console, fetch, rendered, agGrid: mockGrid({ innerHTML: "" }).agGrid });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}
     renderDashboard = (data) => rendered.push(data.monitor.startedAt);
@@ -210,26 +277,25 @@ test("late dashboard response cannot replace newer monitor progress", async () =
 
 function dashboardHarness() {
   const html = fs.readFileSync("web/index.html", "utf8");
-  const cell = { innerHTML: "" };
-  const panel = { hidden: true, querySelector: (_selector: string) => cell };
-  const button = { dataset: { details: "0" }, ariaExpanded: "false", setAttribute(name: string, value: string) { if (name === "aria-expanded") this.ariaExpanded = value; } };
-  const list = { innerHTML: "", querySelector: (_selector: string) => panel };
+  const panel = { hidden: true, innerHTML: "" };
+  const button = { dataset: { details: "REQ123" }, parentElement: { nextElementSibling: panel }, ariaExpanded: "false", textContent: "Ver detalles", setAttribute(name: string, value: string) { if (name === "aria-expanded") this.ariaExpanded = value; } };
+  const list = { innerHTML: "" };
   const empty = { hidden: false };
   const query = { innerHTML: "", hidden: true, scrollIntoView() {} };
-  const document = { querySelector: (selector: string) => selector === "#req-list" ? list : selector === "#empty-state" ? empty : selector === "#query-result" ? query : {} };
-  const context = vm.createContext({ document, URL, console });
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : selector === "#empty-state" ? empty : selector === "#query-result" ? query : {} };
+  const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails; this.renderQueryResultForTest = renderQueryResult;`, context);
   const render = (result: object) => {
     panel.hidden = true;
-    cell.innerHTML = "";
+    panel.innerHTML = "";
     (context as { renderRowsForTest: (reqs: string[], results: object[]) => void })
       .renderRowsForTest(["REQ123"], [{ req: "REQ123", ...result }]);
   };
   const toggle = () => (context as { toggleDetailsForTest: (button: object) => void }).toggleDetailsForTest(button);
   const renderQuery = (result: object) => (context as { renderQueryResultForTest: (result: object) => void })
     .renderQueryResultForTest({ req: "REQ123", ...result });
-  return { html, list, panel, cell, button, render, toggle, query, renderQuery };
+  return { html, list, panel, cell: panel, button, render, toggle, query, renderQuery };
 }
 
 test("portal status is literal, independent of conversation status and unavailable when absent", () => {
@@ -242,6 +308,25 @@ test("portal status is literal, independent of conversation status and unavailab
   ui.render({ conversationStatus: "Finalizada", status: null, microservices: [] });
   assert.match(ui.list.innerHTML, /Estado no disponible/);
   assert.doesNotMatch(ui.list.innerHTML, /Sin microservicio/);
+});
+
+test("portal status badges retain literal text with distinct, safe color classes", () => {
+  const ui = dashboardHarness();
+  for (const [status, tone] of [
+    ["Pending", "warning"], ["Pendiente", "warning"], ["En curso", "info"],
+    ["Finalizada", "success"], ["Rechazada", "danger"],
+  ]) {
+    ui.render({ status, conversationStatus: "Pendiente de respuesta" });
+    assert.match(ui.list.innerHTML, new RegExp(`class="badge portal-status ${tone}"[^>]*>${status}<`));
+  }
+  ui.render({ status: "Other <status>" });
+  assert.match(ui.list.innerHTML, /class="badge portal-status neutral"[^>]*>Other &lt;status&gt;<\/span>/);
+  ui.render({ status: null });
+  assert.match(ui.list.innerHTML, /class="badge portal-status unavailable"[^>]*>Estado no disponible<\/span>/);
+  const css = fs.readFileSync("web/styles.css", "utf8");
+  for (const tone of ["warning", "info", "success", "danger", "neutral", "unavailable"]) {
+    assert.match(css, new RegExp(`\\.portal-status\\.${tone}\\s*\\{`));
+  }
 });
 
 test("manual REQ message separates the Operations reply from status and preserves safe line breaks", () => {
@@ -296,7 +381,7 @@ test("missing values stay unavailable and stored text and links cannot inject ma
 
 test("observed project appears beside microservice and REQ and in accessible stored details", () => {
   const ui = dashboardHarness();
-  assert.match(ui.html, /Proyecto.*Microservicio.*REQ/);
+  assert.match(fs.readFileSync("web/app.js", "utf8"), /headerName: "Proyecto \/ Microservicio \/ REQ"/);
   ui.render({ projectName: "Proyecto Sintético", microservices: ["servicio-demo"] });
   assert.match(ui.list.innerHTML, /Proyecto Sintético/);
   assert.match(ui.list.innerHTML, /servicio-demo/);
@@ -345,26 +430,26 @@ function filterHarness() {
     if (!fields.has(selector)) fields.set(selector, { textContent: "", value: "", innerHTML: "", hidden: false });
     return fields.get(selector);
   };
-  const cell = { innerHTML: "" };
-  const panel = { hidden: true, querySelector: (_selector: string) => cell };
-  const list = { innerHTML: "", querySelector: (_selector: string) => panel };
+  const panel = { hidden: true, innerHTML: "" };
+  const list = { innerHTML: "" };
   const detailsButton = {
-    dataset: { details: "0" },
+    dataset: { details: "REQ100" },
+    parentElement: { nextElementSibling: panel },
     ariaExpanded: "false",
     textContent: "Ver detalles",
     setAttribute(name: string, value: string) { if (name === "aria-expanded") this.ariaExpanded = value; },
   };
   const document = {
     querySelector: (selector: string) => {
-      if (selector === "#req-list") return list;
+      if (selector === "#req-grid") return list;
       if (selector === "#query-result") return stub(selector);
       return stub(selector);
     },
   };
-  const context = vm.createContext({ document, URL, console });
+  const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(
-    `${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails; this.updateSummaryForTest = updateSummary; this.setFiltersForTest = (text, status) => { state.filters.text = text; state.filters.status = status; }; this.getFiltersForTest = () => ({ ...state.filters });`,
+    `${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails; this.updateSummaryForTest = updateSummary; this.setFiltersForTest = (text, status) => { state.filters.text = text; state.filters.status = status; gridApi.setGridOption('quickFilterText', text); gridApi.setColumnFilterModel('status', status === 'all' ? null : { filter: status }); gridApi.onFilterChanged(); }; this.getFiltersForTest = () => ({ ...state.filters }); this.setDashboardForTest = (reqs) => { state.dashboard = { reqs }; };`,
     context,
   );
   const typed = context as unknown as {
@@ -373,14 +458,15 @@ function filterHarness() {
     updateSummaryForTest: (reqs: string[], results: object[]) => void;
     setFiltersForTest: (text: string, status: string) => void;
     getFiltersForTest: () => { text: string; status: string };
+    setDashboardForTest: (reqs: string[]) => void;
   };
   const rows = () => [
     { req: "REQ100", status: "En curso", projectName: "Proyecto Alfa", microservices: ["servicio-pagos"] },
     { req: "REQ200", status: "Asignado por mesa", projectName: "Proyecto Beta", microservices: ["servicio-envios"] },
     { req: "REQ300", status: null, projectName: null, microservices: [] },
   ];
-  const renderAll = () => typed.renderRowsForTest(["REQ100", "REQ200", "REQ300"], rows());
-  return { fields, list, panel, cell, detailsButton, typed, renderAll, stub };
+  const renderAll = () => { typed.setDashboardForTest(["REQ100", "REQ200", "REQ300"]); typed.renderRowsForTest(["REQ100", "REQ200", "REQ300"], rows()); };
+  return { fields, list, panel, cell: panel, detailsButton, typed, renderAll, stub };
 }
 
 test("text filter matches REQ number, observed project and microservice without portal queries", () => {

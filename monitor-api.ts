@@ -1,4 +1,5 @@
 import { spawn, type ChildProcess } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import fs from "node:fs";
 import http, { type IncomingMessage, type ServerResponse } from "node:http";
 import path from "node:path";
@@ -138,14 +139,16 @@ function serveWeb(response: ServerResponse, file: string, contentType: string): 
     json(response, 404, { error: "Interfaz no encontrada" });
     return;
   }
+  const nonce = file === "index.html" ? randomBytes(16).toString("base64") : null;
   response.writeHead(200, {
     "Content-Type": contentType,
     "Cache-Control": "no-store",
-    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'",
+    "Content-Security-Policy": `default-src 'self'; connect-src 'self'; img-src 'self' data:; style-src 'self'${nonce ? ` 'nonce-${nonce}'` : ""}; script-src 'self'; frame-ancestors 'none'`,
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
   });
-  response.end(fs.readFileSync(filePath));
+  const body = fs.readFileSync(filePath);
+  response.end(nonce ? body.toString("utf8").replace("__GRID_STYLE_NONCE__", nonce) : body);
 }
 
 function readReqs(): string[] {
@@ -492,6 +495,21 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
   }
   if (request.method === "GET" && url.pathname === "/app.js") {
     serveWeb(response, "app.js", "text/javascript; charset=utf-8");
+    return;
+  }
+  if (request.method === "GET" && url.pathname === "/ag-grid-community.min.js") {
+    const asset = path.resolve("node_modules/ag-grid-community/dist/ag-grid-community.min.js");
+    if (!fs.existsSync(asset)) {
+      json(response, 404, { error: "Biblioteca de tabla no disponible" });
+      return;
+    }
+    response.writeHead(200, {
+      "Content-Type": "text/javascript; charset=utf-8",
+      "Cache-Control": "public, max-age=86400",
+      "Content-Security-Policy": "default-src 'self'; script-src 'self'",
+      "X-Content-Type-Options": "nosniff",
+    });
+    response.end(fs.readFileSync(asset));
     return;
   }
   if (request.method === "GET" && url.pathname === "/styles.css") {
