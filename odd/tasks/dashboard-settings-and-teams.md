@@ -11,9 +11,9 @@ S5. User: "Continua lo que tenias pendiente y sigue con esos ajustes". Scope: lo
 S6. User: "Mejola la legibilidad de las tarjetas de teams". Scope: group card data into labeled facts and readable comment/attachment blocks, keeping banner and action links. Check: payload regression test when authorized.
 
 ## Tasks
-T1 [S1] Route: inline (shared scheduler/settings behavior). Status: implementation written, functional proof pending; commit: pending; Risk: items 1, 4 (persisted settings and timer ordering).
+T1 [S1] Route: inline (shared scheduler/settings behavior). Status: implementation written, functional proof pending; commit: efb431c; Risk: items 1, 4 (persisted settings and timer ordering).
 T2 [S2,S3] Route: inline (dashboard ordering and add-only readback). Status: implementation written, functional/visual proof pending; commit: pending; Risk: none.
-T3 [S4,S6] Route: inline (notification state and presentation). Status: implementation written, functional proof pending; commit: pending; Risk: item 3 (Teams message contract).
+T3 [S4,S6] Route: inline (notification state and presentation). Status: implementation written, functional proof pending; commit: 09fc99f; Risk: item 3 (Teams message contract).
 T4 [S5] Route: inline (Docker deployment after safe evidence). Status: pending; commit: pending; Risk: item 5 (deployment).
 
 ## Log
@@ -23,3 +23,4 @@ L3: Added persisted interval settings section (0 pauses), timer replacement and 
 L4: Docker build using original Dockerfile offline failed at uncached Corepack download; verified previous image has identical package and lockfile plus dependencies, built candidate offline from it with `pnpm typecheck` passing. Candidate image `sha256:4b31129e26d5e28e1da991ff8cdb73176187a2c69c8ca69bf797809442bf4cdd`; rollback image `sha256:9999c6d0a327887a9bed5aac8214ebd9f9b307189c0e80c55c2d95595b7a6ee6` still running healthy. Compose configuration with explicit interval 0 and run-on-start false validated. Review START for updated 24-path candidate was explicitly consented but refused before creating authority with `lens_context_budget_exceeded`; worktree not deployed or committed. Need a smaller review candidate or human decision; tests/browser remain prohibited.
 L5 (2026-11-06) User: "Mejola la legibilidad de las tarjetas de teams"
 L6: User authorized local, separate commits without push to enable review of smaller candidates. Committed AG Grid and details work as `30800a4` (amended after scoped review correction), helper work as `57012ca`, and Teams cards as `09fc99f`; all three received native review acknowledgements. Added labeled facts and separated comment blocks in Teams cards, plus an unrun payload regression test. The existing candidate image predates S6 and must be rebuilt before deployment.
+L7: Committed backend lock/interval and CLI selection as `efb431c`. Native review of this tranche escalated unknown causality for scheduled lock behavior (`R3-scheduled-lock-contract`) and corroborated a hard-stop on malformed persisted results (`R4-results-parse-hard-stop`); no approval. Functional proof remains unavailable under the no-tests instruction. The prior container is healthy and unchanged.

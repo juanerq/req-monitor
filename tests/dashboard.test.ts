@@ -4,8 +4,9 @@ import vm from "node:vm";
 import { test } from "node:test";
 
 function mockGrid(list: { innerHTML: string }) {
-  let options: { columnDefs: { field?: string; cellRenderer?: (params: { data: any }) => string }[]; onModelUpdated?: () => void };
+  let options: { columnDefs: { field?: string; cellRenderer?: (params: { data: any }) => string }[]; rowSelection?: { isRowSelectable?: (node: { data: any }) => boolean }; onModelUpdated?: () => void; onSelectionChanged?: () => void };
   let rows: any[] = [];
+  let selected = new Set<string>();
   let quick = "";
   let status = "all";
   const displayed = () => rows.filter((row) =>
@@ -18,17 +19,59 @@ function mockGrid(list: { innerHTML: string }) {
   };
   const api = {
     setGridOption(name: string, value: any) {
-      if (name === "rowData") rows = value;
+      if (name === "rowData") {
+        rows = value;
+        selected = new Set([...selected].filter((req) => rows.some((row) => row.req === req && options.rowSelection?.isRowSelectable?.({ data: row }) !== false)));
+      }
       if (name === "quickFilterText") quick = value;
       redraw();
+      if (name === "rowData") options.onSelectionChanged?.();
     },
     setColumnFilterModel: async (_column: string, model: { filter: string } | null) => { status = model?.filter ?? "all"; },
     onFilterChanged: redraw,
     getDisplayedRowCount: () => displayed().length,
+    getSelectedRows: () => rows.filter((row) => selected.has(row.req)),
+    refreshCells: () => redraw(),
+    selectAll: (mode?: string) => { assert.equal(mode, undefined, "default mode includes filtered and paginated rows"); selected = new Set(rows.filter((row) => options.rowSelection?.isRowSelectable?.({ data: row }) !== false).map((row) => row.req)); options.onSelectionChanged?.(); },
+    deselectAll: (mode?: string) => { assert.equal(mode, undefined); selected.clear(); options.onSelectionChanged?.(); },
     resetRowHeights() {},
   };
-  return { agGrid: { themeQuartz: { withParams: () => ({}) }, createGrid: (_el: unknown, config: typeof options) => { options = config; return api; } }, api };
+  return { agGrid: { themeQuartz: { withParams: () => ({}) }, createGrid: (_el: unknown, config: typeof options) => { options = config; return api; } }, api,
+    select: (...reqs: string[]) => { selected = new Set(reqs.filter((req) => rows.some((row) => row.req === req && options.rowSelection?.isRowSelectable?.({ data: row }) !== false))); options.onSelectionChanged?.(); } };
 }
+
+test("add-monitor form submits pasted REQs together and preserves the single-REQ path", async () => {
+  const source = fs.readFileSync("web/app.js", "utf8");
+  const helpers = source.slice(source.indexOf("function normalizeReq("), source.indexOf("function fileType("));
+  const handler = source.slice(source.indexOf('elements.addForm.addEventListener("submit"'), source.indexOf('elements.queryForm.addEventListener("submit"'));
+  const input = { value: "REQ101, req102\nREQ101; REQ103" };
+  const calls: { method: string; body: string }[] = [];
+  const urls: string[] = [];
+  const messages: string[] = [];
+  let onSubmit: (event: { preventDefault: () => void }) => Promise<void> = async () => {};
+  let refreshes = 0;
+  const elements = { addForm: { addEventListener: (_name: string, listener: typeof onSubmit) => { onSubmit = listener; } } };
+  const context = vm.createContext({ elements, document: { querySelector: () => input },
+    api: async (url: string, options: { method: string; body: string }) => { urls.push(url); calls.push(options); },
+    loadDashboard: async () => { refreshes++; }, toast: (message: string) => messages.push(message) });
+  vm.runInContext(`${helpers}\n${handler}`, context);
+  await onSubmit({ preventDefault() {} });
+  assert.deepEqual(JSON.parse(calls[0].body), { reqs: ["REQ101", "REQ102", "REQ103"] });
+  assert.equal(calls[0].method, "POST");
+  assert.equal(urls[0], "/api/reqs");
+  assert.equal(input.value, "");
+  assert.equal(refreshes, 1);
+  assert.match(messages[0], /3 REQ/);
+
+  input.value = "req104";
+  await onSubmit({ preventDefault() {} });
+  assert.deepEqual(JSON.parse(calls[1].body), { reqs: ["REQ104"] });
+  assert.equal(refreshes, 2);
+
+  input.value = " , ; \n ";
+  await onSubmit({ preventDefault() {} });
+  assert.equal(calls.length, 2, "empty input must not send a batch");
+});
 
 test("REQ table uses AG Grid Community for sorting, column filtering and pagination", () => {
   const html = fs.readFileSync("web/index.html", "utf8");
@@ -50,6 +93,50 @@ test("REQ table uses AG Grid Community for sorting, column filtering and paginat
   assert.equal((options.defaultColDef as { sortable: boolean; filter: boolean }).sortable, true);
   assert.equal((options.defaultColDef as { sortable: boolean; filter: boolean }).filter, true);
   assert.ok((options.columnDefs as { headerName: string }[]).some((column) => column.headerName === "Estado del portal"));
+});
+
+test("dashboard refresh repaints changed microservice names when the REQ column value stays the same", () => {
+  const list = { innerHTML: "" };
+  const empty = { hidden: false, textContent: "" };
+  const live = { hidden: true, textContent: "" };
+  const selection = { textContent: "" };
+  const run = { disabled: true };
+  let options: { columnDefs: { field?: string; cellRenderer?: (params: { data: any }) => string }[] };
+  let lastReq = "";
+  let row: any;
+  const refreshes: object[] = [];
+  const gridApi = {
+    setGridOption: (_key: string, value: any[]) => {
+      row = value[0];
+      if (row.req !== lastReq) {
+        lastReq = row.req;
+        list.innerHTML = options.columnDefs[0].cellRenderer!({ data: row });
+      }
+    },
+    refreshCells: (params: object) => {
+      refreshes.push(params);
+      list.innerHTML = options.columnDefs[0].cellRenderer!({ data: row });
+    },
+    getSelectedRows: () => [], getDisplayedRowCount: () => 1,
+  };
+  const document = { querySelector: (selector: string) => ({
+    "#req-grid": list, "#empty-state": empty, "#live-progress": live,
+    "#selection-count": selection, "#run-button": run,
+  } as Record<string, object>)[selector] ?? {} };
+  const context = vm.createContext({ document, URL, console,
+    agGrid: { themeQuartz: { withParams: () => ({}) }, createGrid: (_el: unknown, config: typeof options) => { options = config; return gridApi; } } });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;
+    state.dashboard = { reqs: ["REQ101"], monitor: { activeTask: null }, schedule: { allowed: true } };`, context);
+  const render = (names: string[]) => (context as { renderRowsForTest: (reqs: string[], results: object[]) => void })
+    .renderRowsForTest(["REQ101"], [{ req: "REQ101", microservices: names }]);
+  render(["OldService"]);
+  render(["AlphaApi,BetaApi", "GammaApi"]);
+  assert.match(list.innerHTML, /AlphaApi, BetaApi, GammaApi/);
+  assert.doesNotMatch(list.innerHTML, /OldService/);
+  assert.deepEqual(JSON.parse(JSON.stringify(refreshes.at(-1))), { force: true, columns: ["req", "actions"] });
+  const css = fs.readFileSync("web/styles.css", "utf8");
+  assert.match(css, /\.req-service\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/);
 });
 
 test("dashboard remains usable when the AG Grid asset cannot load", () => {
@@ -204,26 +291,196 @@ test("completed monitor authentication failure opens Acceso once per run", () =>
 test("per-REQ monitor progress distinguishes running, successful, failed and unvisited rows", () => {
   const list = { innerHTML: "" };
   const empty = { hidden: false };
+  const live = { hidden: true, textContent: "" };
   const document = { querySelector: (selector: string) => selector === "#req-grid" ? list :
-    selector === "#empty-state" ? empty : {} };
+    selector === "#empty-state" ? empty : selector === "#live-progress" ? live : {} };
   const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
-  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;`, context);
-  const render = (items: object, running: boolean) => (context as {
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.activeRowForTest = gridOptions.rowClassRules["req-active"];`, context);
+  const render = (items: object, running: boolean, selectedReqs: string[] | null = null) => (context as {
     renderRowsForTest: (reqs: string[], results: object[], progress: object, monitor: object) => void;
   }).renderRowsForTest(["REQ101", "REQ102", "REQ103"],
     [{ req: "REQ101", title: "Resultado anterior", checkedAt: "2026-11-04T10:00:00Z" }],
-    { startedAt: "2026-11-05T15:00:00Z", items }, { running, startedAt: "2026-11-05T15:00:00Z" });
+    { startedAt: "2026-11-05T15:00:00Z", items }, { running, startedAt: "2026-11-05T15:00:00Z", selectedReqs });
   render({ REQ101: "success", REQ102: "running" }, true);
+  assert.equal(live.hidden, false);
+  assert.match(live.textContent, /Monitoreando ahora: REQ102 · 1 de 3 revisadas/);
+  const activeRow = (context as { activeRowForTest: (params: object) => boolean }).activeRowForTest;
+  assert.equal(activeRow({ data: { active: true } }), true);
+  assert.equal(activeRow({ data: { active: false } }), false);
   assert.match(list.innerHTML, /Resultado anterior/);
-  assert.match(list.innerHTML, /REQ101[\s\S]*Consultada · resultados al finalizar/);
+  assert.match(list.innerHTML, /aria-label="Monitoreo: Revisada"/);
   assert.match(list.innerHTML, /REQ102[\s\S]*En revisión/);
-  assert.match(list.innerHTML, /REQ103[\s\S]*Pendiente/);
+  assert.doesNotMatch(list.innerHTML, /Analizada|En espera|No revisada/);
+  assert.doesNotMatch(list.innerHTML, />Analizando</);
+  render({ REQ102: "running" }, true, ["REQ102"]);
+  assert.match(live.textContent, /Monitoreando ahora: REQ102 · 0 de 1 revisadas/);
+  assert.doesNotMatch(list.innerHTML, /REQ101[\s\S]*Monitoreo: Revisada/);
+  render({ REQ101: "success" }, true);
+  assert.match(live.textContent, /Preparando siguiente REQ · 1 de 3 revisadas/);
   render({ REQ101: "success", REQ102: "error" }, false);
+  assert.equal(live.hidden, true);
+  assert.equal(live.textContent, "");
   assert.match(list.innerHTML, /REQ101[\s\S]*Revisada/);
   assert.match(list.innerHTML, /REQ102[\s\S]*Error de revisión/);
-  assert.match(list.innerHTML, /REQ103[\s\S]*No revisada/);
-  assert.doesNotMatch(list.innerHTML, /REQ103[\s\S]*Error de revisión/);
+  assert.doesNotMatch(list.innerHTML, /No revisada/);
+});
+
+test("manual selection starts empty, survives refresh and never selects unconfigured REQs", () => {
+  const list = { innerHTML: "" };
+  const empty = { hidden: false };
+  const run = { disabled: true };
+  const count = { textContent: "" };
+  const grid = mockGrid(list);
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list :
+    selector === "#empty-state" ? empty : selector === "#run-button" ? run :
+      selector === "#selection-count" ? count : {} };
+  const context = vm.createContext({ document, URL, console, agGrid: grid.agGrid });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;
+    this.setDashboardForTest = (reqs) => { state.dashboard = { reqs, monitor: { activeTask: null }, schedule: { allowed: true } }; };
+    this.selectedReqsForTest = selectedReqs; this.selectionConfigForTest = gridOptions.rowSelection;`, context);
+  const ui = context as { renderRowsForTest: (reqs: string[], results: object[]) => void;
+    setDashboardForTest: (reqs: string[]) => void; selectedReqsForTest: () => string[];
+    selectionConfigForTest: { headerCheckbox: boolean; mode: string; selectAll: string } };
+  ui.setDashboardForTest(["REQ101", "REQ102"]);
+  ui.renderRowsForTest(["REQ101", "REQ102"], []);
+  assert.equal(run.disabled, true);
+  assert.equal(ui.selectionConfigForTest.headerCheckbox, true);
+  assert.equal(ui.selectionConfigForTest.selectAll, "all");
+  assert.equal(ui.selectionConfigForTest.mode, "multiRow");
+  grid.select("REQ102");
+  assert.deepEqual([...ui.selectedReqsForTest()], ["REQ102"]);
+  assert.equal(run.disabled, false);
+  assert.equal(count.textContent, "1 REQ seleccionadas");
+  ui.renderRowsForTest(["REQ101", "REQ102"], []);
+  assert.deepEqual([...ui.selectedReqsForTest()], ["REQ102"]);
+  ui.setDashboardForTest(["REQ101"]);
+  ui.renderRowsForTest(["REQ101"], []);
+  assert.equal(run.disabled, true);
+});
+
+test("header checkbox selects all eligible REQs across filters and pagination", () => {
+  const html = fs.readFileSync("web/index.html", "utf8");
+  assert.doesNotMatch(html, /id="select-all-button"/);
+  const list = { innerHTML: "" };
+  const empty = { hidden: false };
+  const run = { disabled: true };
+  const count = { textContent: "" };
+  const grid = mockGrid(list);
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list :
+    selector === "#empty-state" ? empty : selector === "#run-button" ? run :
+      selector === "#selection-count" ? count : {} };
+  const context = vm.createContext({ document, URL, console, agGrid: grid.agGrid });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;
+    this.setDashboardForTest = (reqs) => { state.dashboard = { reqs, monitor: { activeTask: null }, schedule: { allowed: true } }; };
+    this.selectedForTest = selectedReqs; this.gridOptionsForTest = gridOptions;`, context);
+  const ui = context as { renderRowsForTest: (reqs: string[], results: object[]) => void;
+    setDashboardForTest: (reqs: string[]) => void; selectedForTest: () => string[];
+    gridOptionsForTest: { selectionColumnDef: { pinned: string }; rowSelection: { headerCheckbox: boolean; selectAll: string } } };
+  ui.setDashboardForTest([]);
+  ui.renderRowsForTest([], []);
+  assert.equal(ui.gridOptionsForTest.selectionColumnDef.pinned, "left");
+  assert.equal(ui.gridOptionsForTest.rowSelection.headerCheckbox, true);
+  assert.equal(ui.gridOptionsForTest.rowSelection.selectAll, "all");
+  ui.setDashboardForTest(["REQ101", "REQ102", "REQ103"]);
+  ui.renderRowsForTest(["REQ101", "REQ102", "REQ103"], []);
+  grid.api.setGridOption("quickFilterText", "REQ101");
+  grid.api.selectAll();
+  assert.deepEqual([...ui.selectedForTest()], ["REQ101", "REQ102", "REQ103"]);
+  assert.equal(run.disabled, false);
+  ui.renderRowsForTest(["REQ101", "REQ102", "REQ103"], []);
+  assert.deepEqual([...ui.selectedForTest()], ["REQ101", "REQ102", "REQ103"]);
+  grid.api.deselectAll();
+  assert.deepEqual([...ui.selectedForTest()], []);
+  assert.equal(run.disabled, true);
+  grid.select("REQ102");
+  grid.api.selectAll();
+  assert.deepEqual([...ui.selectedForTest()], ["REQ101", "REQ102", "REQ103"]);
+});
+
+test("latest-review sort puts newly added unreviewed REQs first", () => {
+  const list = { innerHTML: "" };
+  const grid = mockGrid(list);
+  const empty = { hidden: false, textContent: "" };
+  const progress = { hidden: false, textContent: "" };
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list :
+    selector === "#empty-state" ? empty : selector === "#live-progress" ? progress :
+      selector === "#selection-count" ? { textContent: "" } :
+      selector === "#run-button" || selector === "#run-all-button" ? { disabled: false } : {} };
+  const context = vm.createContext({ document, URL, console, agGrid: grid.agGrid });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;
+    this.setDashboardForTest = (reqs) => { state.dashboard = { reqs, monitor: { activeTask: null }, schedule: { allowed: true } }; };
+    this.reviewColumnForTest = gridOptions.columnDefs.find((column) => column.field === "checkedAt");`, context);
+  const ui = context as { renderRowsForTest: (reqs: string[], results: object[]) => void;
+    setDashboardForTest: (reqs: string[]) => void;
+    reviewColumnForTest: { sort: string; valueGetter: (params: { data: { checkedAt: string | null } }) => number;
+      comparator: (a: number, b: number) => number } };
+  assert.equal(ui.reviewColumnForTest.sort, "desc");
+  const rank = (checkedAt: string | null) => ui.reviewColumnForTest.valueGetter({ data: { checkedAt } });
+  assert.ok(ui.reviewColumnForTest.comparator(rank(null), rank("2026-11-05T10:00:00.000Z")) > 0);
+  assert.ok(ui.reviewColumnForTest.comparator(rank("2026-11-05T11:00:00.000Z"), rank("2026-11-05T10:00:00.000Z")) > 0);
+  ui.setDashboardForTest(["REQ101", "REQ102", "REQ103"]);
+  ui.renderRowsForTest(["REQ101", "REQ102", "REQ103"], []);
+  assert.ok(list.innerHTML.indexOf("REQ103") < list.innerHTML.indexOf("REQ101"));
+});
+
+test("run-all selects every configured REQ and sends one manual batch without starting when blocked", async () => {
+  const list = { innerHTML: "" };
+  const empty = { hidden: false };
+  const run = { disabled: true };
+  const runAll = { disabled: true };
+  const count = { textContent: "" };
+  const grid = mockGrid(list);
+  const requests: { url: string; body: string }[] = [];
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list :
+    selector === "#empty-state" ? empty : selector === "#run-button" ? run :
+      selector === "#run-all-button" ? runAll : selector === "#selection-count" ? count : {} };
+  const context = vm.createContext({ document, URL, console, agGrid: grid.agGrid, requests });
+  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;
+    this.setDashboardForTest = (reqs, allowed = true, activeTask = null, lockedReqs = []) => {
+      state.dashboard = { reqs, lockedReqs, monitor: { activeTask }, schedule: { allowed } }; updateRunSelection();
+    };
+    this.runAllForTest = runAllReqs; this.runSelectedForTest = runManualMonitor; this.selectedForTest = selectedReqs;
+    api = async (url, options) => { requests.push({ url, body: options.body }); };
+    loadDashboard = async () => {}; toast = () => {};`, context);
+  const ui = context as { renderRowsForTest: (reqs: string[], results: object[]) => void;
+    setDashboardForTest: (reqs: string[], allowed?: boolean, activeTask?: string | null, lockedReqs?: string[]) => void;
+    runAllForTest: () => Promise<void>; runSelectedForTest: (reqs: string[]) => Promise<void>; selectedForTest: () => string[] };
+  ui.setDashboardForTest([]);
+  await ui.runAllForTest();
+  assert.equal(runAll.disabled, true);
+  assert.equal(requests.length, 0);
+  ui.setDashboardForTest(["REQ101", "REQ102", "REQ103"]);
+  ui.renderRowsForTest(["REQ101", "REQ102", "REQ103"], []);
+  grid.api.setGridOption("quickFilterText", "REQ101");
+  grid.select("REQ102");
+  await ui.runAllForTest();
+  assert.deepEqual([...ui.selectedForTest()], ["REQ101", "REQ102", "REQ103"]);
+  assert.equal(requests.length, 1);
+  assert.equal(requests[0].url, "/api/monitor/run");
+  assert.deepEqual(JSON.parse(requests[0].body), { reqs: ["REQ101", "REQ102", "REQ103"] });
+  grid.select("REQ102");
+  await ui.runSelectedForTest(ui.selectedForTest());
+  assert.deepEqual(JSON.parse(requests[1].body), { reqs: ["REQ102"] });
+  ui.setDashboardForTest(["REQ101", "REQ102", "REQ103"], true, null, ["REQ101"]);
+  ui.renderRowsForTest(["REQ101", "REQ102", "REQ103"], [{ req: "REQ101", status: "Finalizado" }]);
+  grid.select("REQ101");
+  assert.deepEqual([...ui.selectedForTest()], []);
+  assert.match(list.innerHTML, /Desbloquear REQ101/);
+  await ui.runAllForTest();
+  assert.deepEqual(JSON.parse(requests[2].body), { reqs: ["REQ102", "REQ103"] });
+  ui.setDashboardForTest(["REQ101", "REQ102", "REQ103"]);
+  ui.renderRowsForTest(["REQ101", "REQ102", "REQ103"], [{ req: "REQ101", status: "Finalizado" }]);
+  assert.match(list.innerHTML, /Bloquear REQ101/);
+  ui.setDashboardForTest(["REQ101", "REQ102", "REQ103"], false);
+  await ui.runAllForTest();
+  ui.setDashboardForTest(["REQ101", "REQ102", "REQ103"], true, "monitor");
+  await ui.runAllForTest();
+  assert.equal(requests.length, 3, "blocked and busy states must not start another run");
 });
 
 test("dashboard alerts once for partial or total scan failures and not for clean runs", () => {
@@ -234,10 +491,10 @@ test("dashboard alerts once for partial or total scan failures and not for clean
   vm.runInContext(`${script}\nthis.renderDashboardForTest = renderDashboard;
     renderAuthStatus = () => {}; updateSummary = () => {}; updateMonitor = () => {}; renderRows = () => {};
     toast = (message) => messages.push(message);`, context);
-  const render = (startedAt: string, items: object, running: boolean, exitCode: number) =>
+  const render = (startedAt: string, items: object, running: boolean, exitCode: number, selectedReqs: string[] | null = null) =>
     (context as { renderDashboardForTest: (data: object) => void }).renderDashboardForTest({
       reqs: ["REQ101", "REQ102"], results: [], auth: {},
-      monitor: { startedAt, running, exitCode, authRequired: false },
+      monitor: { startedAt, running, exitCode, authRequired: false, selectedReqs },
       progress: { startedAt, items },
     });
   render("run-1", { REQ101: "running" }, true, 0);
@@ -250,6 +507,10 @@ test("dashboard alerts once for partial or total scan failures and not for clean
   assert.match(messages.at(-1) ?? "", /ninguna REQ/i);
   render("run-3", { REQ101: "success", REQ102: "success" }, false, 0);
   assert.equal(messages.length, 2);
+  render("run-4", { REQ101: "success" }, false, 0, ["REQ101"]);
+  assert.equal(messages.length, 2, "unselected REQs do not count as missing from a partial run");
+  render("run-5", { REQ101: "error" }, false, 1, ["REQ101"]);
+  assert.match(messages.at(-1) ?? "", /ninguna REQ/i);
 });
 
 test("late dashboard response cannot replace newer monitor progress", async () => {
@@ -277,17 +538,18 @@ test("late dashboard response cannot replace newer monitor progress", async () =
 
 function dashboardHarness() {
   const html = fs.readFileSync("web/index.html", "utf8");
-  const panel = { hidden: true, innerHTML: "" };
-  const button = { dataset: { details: "REQ123" }, parentElement: { nextElementSibling: panel }, ariaExpanded: "false", textContent: "Ver detalles", setAttribute(name: string, value: string) { if (name === "aria-expanded") this.ariaExpanded = value; } };
+  const panel = { innerHTML: "" };
+  const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
+  const button = { dataset: { details: "REQ123" } };
   const list = { innerHTML: "" };
   const empty = { hidden: false };
   const query = { innerHTML: "", hidden: true, scrollIntoView() {} };
-  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : selector === "#empty-state" ? empty : selector === "#query-result" ? query : {} };
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : selector === "#empty-state" ? empty : selector === "#query-result" ? query : selector === "#req-details-dialog" ? dialog : selector === "#req-details-content" ? panel : {} };
   const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
   const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails; this.renderQueryResultForTest = renderQueryResult;`, context);
   const render = (result: object) => {
-    panel.hidden = true;
+    dialog.close();
     panel.innerHTML = "";
     (context as { renderRowsForTest: (reqs: string[], results: object[]) => void })
       .renderRowsForTest(["REQ123"], [{ req: "REQ123", ...result }]);
@@ -295,7 +557,7 @@ function dashboardHarness() {
   const toggle = () => (context as { toggleDetailsForTest: (button: object) => void }).toggleDetailsForTest(button);
   const renderQuery = (result: object) => (context as { renderQueryResultForTest: (result: object) => void })
     .renderQueryResultForTest({ req: "REQ123", ...result });
-  return { html, list, panel, cell: panel, button, render, toggle, query, renderQuery };
+  return { html, list, panel, cell: panel, dialog, button, render, toggle, query, renderQuery };
 }
 
 test("portal status is literal, independent of conversation status and unavailable when absent", () => {
@@ -340,7 +602,7 @@ test("manual REQ message separates the Operations reply from status and preserve
   assert.match(ui.query.innerHTML, /Estado del portal/);
 });
 
-test("details reveal stored fields on demand and close when toggled or refreshed", () => {
+test("details open in a separate dialog without compressing the grid cell", () => {
   const ui = dashboardHarness();
   const result = {
     status: "En curso", conversationStatus: "Pendiente de respuesta", description: "Descripción completa\nsegunda línea",
@@ -350,21 +612,18 @@ test("details reveal stored fields on demand and close when toggled or refreshed
     checkedAt: "2026-10-09T12:00:00.000Z", microservices: ["servicio-a"],
   };
   ui.render(result);
-  assert.match(ui.list.innerHTML, /Ver detalles/);
-  assert.match(ui.list.innerHTML, /aria-expanded="false"/);
+  assert.match(ui.list.innerHTML, /aria-label="Ver detalles de REQ123"/);
+  assert.doesNotMatch(ui.list.innerHTML, /<span>Detalles<\/span>|grid-details/);
   assert.doesNotMatch(ui.list.innerHTML, /Persona Prueba|prueba@example.invalid|Descripción completa/);
   ui.toggle();
-  assert.equal(ui.panel.hidden, false);
-  assert.equal(ui.button.ariaExpanded, "true");
+  assert.equal(ui.dialog.open, true);
   for (const value of ["Descripción completa", "segunda línea", "Paso primero", "Persona Prueba", "usuario-prueba", "prueba@example.invalid", "555-0100", "fecha de envío", "fecha de actualización", "Cambio", "App demo", "Tipo A", "Interno", "Pendiente de respuesta", "servicio-a"]) {
     assert.ok(ui.cell.innerHTML.includes(value), value);
   }
-  ui.toggle();
-  assert.equal(ui.panel.hidden, true);
-  assert.equal(ui.cell.innerHTML, "");
-  ui.toggle();
+  ui.dialog.close();
+  assert.equal(ui.dialog.open, false);
   ui.render(result);
-  assert.equal(ui.panel.hidden, true);
+  assert.equal(ui.dialog.open, false);
   assert.doesNotMatch(ui.list.innerHTML, /prueba@example.invalid/);
 });
 
@@ -388,7 +647,7 @@ test("observed project appears beside microservice and REQ and in accessible sto
   assert.match(ui.list.innerHTML, /REQ123/);
   ui.toggle();
   assert.match(ui.cell.innerHTML, /<dt>Proyecto<\/dt><dd>Proyecto Sintético<\/dd>/);
-  assert.equal(ui.button.ariaExpanded, "true");
+  assert.equal(ui.dialog.open, true);
 });
 
 test("missing or blank project is explicitly unavailable in row, details and manual query", () => {
@@ -430,19 +689,18 @@ function filterHarness() {
     if (!fields.has(selector)) fields.set(selector, { textContent: "", value: "", innerHTML: "", hidden: false });
     return fields.get(selector);
   };
-  const panel = { hidden: true, innerHTML: "" };
+  const panel = { innerHTML: "" };
+  const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
   const list = { innerHTML: "" };
   const detailsButton = {
     dataset: { details: "REQ100" },
-    parentElement: { nextElementSibling: panel },
-    ariaExpanded: "false",
-    textContent: "Ver detalles",
-    setAttribute(name: string, value: string) { if (name === "aria-expanded") this.ariaExpanded = value; },
   };
   const document = {
     querySelector: (selector: string) => {
       if (selector === "#req-grid") return list;
       if (selector === "#query-result") return stub(selector);
+      if (selector === "#req-details-dialog") return dialog;
+      if (selector === "#req-details-content") return panel;
       return stub(selector);
     },
   };
@@ -466,7 +724,7 @@ function filterHarness() {
     { req: "REQ300", status: null, projectName: null, microservices: [] },
   ];
   const renderAll = () => { typed.setDashboardForTest(["REQ100", "REQ200", "REQ300"]); typed.renderRowsForTest(["REQ100", "REQ200", "REQ300"], rows()); };
-  return { fields, list, panel, cell: panel, detailsButton, typed, renderAll, stub };
+  return { fields, list, panel, dialog, cell: panel, detailsButton, typed, renderAll, stub };
 }
 
 test("text filter matches REQ number, observed project and microservice without portal queries", () => {
@@ -527,7 +785,7 @@ test("filters persist across re-render and detail controls follow the filtered r
   assert.match(ui.list.innerHTML, /REQ100/);
   assert.doesNotMatch(ui.list.innerHTML, /REQ200/);
   ui.typed.toggleDetailsForTest(ui.detailsButton);
-  assert.equal(ui.panel.hidden, false);
+  assert.equal(ui.dialog.open, true);
   assert.match(ui.cell.innerHTML, /Proyecto Alfa/);
 });
 

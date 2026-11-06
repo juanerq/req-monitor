@@ -19,11 +19,11 @@
           <span id="status-dot" class="status-dot"></span>
           <div>
             <strong id="monitor-label">Conectando</strong>
-              <small id="monitor-time" aria-live="polite">Sin información</small>
+            <small id="monitor-time" aria-live="polite">Sin información</small>
           </div>
         </div>
         <div>
-          <button id="credentials-button" class="credentials-button" type="button" title="Configurar acceso MiAsistencia360">Acceso</button>
+          <button id="credentials-button" class="credentials-button" type="button" title="Iniciar o renovar sesión de MiAsistencia360"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 17l5-5-5-5m5 5H3"/><path d="M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7"/></svg><span>Iniciar sesión</span></button>
           <small id="auth-status" role="status">Comprobando sesión local</small>
         </div>
       </div>
@@ -45,24 +45,43 @@
             <h2>REQ monitoreadas</h2>
           </div>
           <div class="actions">
+            <span id="selection-count" class="selection-count" role="status">Seleccioná REQ en la tabla</span>
             <button id="refresh-button" class="secondary" type="button">Actualizar</button>
-            <button id="run-button" class="primary" type="button">Ejecutar monitor</button>
+            <button id="outside-hours-button" class="secondary outside-hours-button" type="button" aria-pressed="false" title="Permitir ejecuciones manuales y automáticas fuera del horario laboral" disabled>Habilitar fuera de horario</button>
+            <button id="run-button" class="primary" type="button" disabled>Ejecutar monitor</button>
+            <button id="run-all-button" class="secondary" type="button" disabled>Ejecutar todas</button>
           </div>
         </div>
+        <p class="schedule-note">Al habilitar fuera de horario, también se ejecutará el monitor automático y podrá enviar alertas a Teams.</p>
 
         <form id="add-form" class="add-form">
-          <label for="add-req">Agregar al monitoreo</label>
+          <label for="add-req">Agregar REQ al monitoreo</label>
           <div class="inline-form">
-            <input id="add-req" name="req" placeholder="REQ000007780500" autocomplete="off" required>
+            <textarea id="add-req" name="reqs" rows="2" placeholder="REQ000007780500, REQ000007780501" aria-describedby="add-req-hint" autocomplete="off" required></textarea>
             <button class="secondary" type="submit">Agregar</button>
           </div>
+          <p id="add-req-hint" class="add-req-hint">Ingresa varias REQ separadas por comas, espacios o saltos de línea.</p>
         </form>
 
+        <div id="live-progress" class="live-progress" role="status" aria-live="polite" hidden></div>
         <div class="table-wrap">
           <p id="filter-count" class="filter-count" aria-live="polite"></p>
           <div id="req-grid" aria-label="Tabla de REQ monitoreadas"></div>
           <div id="empty-state" class="empty-state" hidden>No hay REQ configuradas.</div>
         </div>
+      </section>
+
+      <section class="command-panel" aria-labelledby="settings-title">
+        <div>
+          <p class="eyebrow">CONFIGURACIÓN</p>
+          <h2 id="settings-title">Configuración</h2>
+          <p>El intervalo se aplica al monitor automático sin iniciar una revisión inmediata. Usa 0 para pausarlo.</p>
+        </div>
+        <form id="interval-form" class="inline-form">
+          <label for="interval-minutes">Intervalo automático (minutos)</label>
+          <input id="interval-minutes" name="intervalMinutes" type="number" min="0" max="1440" step="1" required>
+          <button class="secondary" type="submit">Guardar</button>
+        </form>
       </section>
 
       <section class="command-panel">
@@ -80,6 +99,14 @@
 
       <section id="query-result" class="query-result" hidden aria-live="polite"></section>
     </main>
+
+    <dialog id="req-details-dialog" aria-label="Información de la REQ">
+      <div class="details-dialog-header">
+        <h2>Información de la REQ</h2>
+        <button id="req-details-close" class="secondary" type="button">Cerrar</button>
+      </div>
+      <div id="req-details-content"></div>
+    </dialog>
 
     <dialog id="credentials-dialog">
       <form id="credentials-form">

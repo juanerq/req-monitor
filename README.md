@@ -73,6 +73,14 @@ Para usar el monitor desde la terminal, crea `reqs.txt` con una REQ por línea (
 pnpm monitor-req
 ```
 
+Para ejecutar solo algunas REQ desde la terminal, indica `--req` una vez por número (no se combina con `--file`):
+
+```bash
+pnpm monitor-req --req REQ123 --req REQ456
+```
+
+Las REQ no seleccionadas conservan sus resultados y su estado previo de alertas.
+
 El monitor consulta las REQ y notifica cuando una conversación entra en `Pendiente de respuesta`, cuando Operaciones agrega un comentario nuevo mientras continúa pendiente y cuando el estado oficial cambia a `Finalizada`. Las alertas pendientes usan color rojo y las finalizadas color verde. Guarda el estado y una huella del comentario en `artifacts/req-status.json` para no repetir alertas.
 
 Si el comentario vigente de Operaciones indica fecha y hora explícitas, la tabla muestra el **plazo indicado** en hora de Colombia; no es una fecha de cierre confirmada. Sin fecha explícita aparece «Sin plazo indicado», y tras respuesta o finalización, «Plazo inactivo». Mientras la REQ sigue pendiente, el monitor envía como máximo un recordatorio por ciclo y día entre las 08:00 y las 11:59 de Colombia. Una alerta nueva del mismo ciclo sustituye el recordatorio de esa mañana. Ejecuciones manuales fuera de esa ventana no envían recordatorios; `--dry-run` no registra entregas.
@@ -89,7 +97,7 @@ Prueba solamente el webhook (requiere `TEAMS_WEBHOOK_URL`):
 pnpm monitor-req --test-notification
 ```
 
-El monitor envía una Adaptive Card con el proyecto observado, cuando está disponible, los microservicios y las URLs de Pull Request encontrados en `Descripción Detallada de la Solicitud`. El botón `Abrir REQ` usa el enlace compartible oficial de MiAsistencia360 y dirige al detalle específico después de autenticarse. Un HTTP `202 Accepted` confirma que Power Automate recibió la solicitud; confirma la publicación en Teams desde el historial de ejecuciones del workflow.
+El monitor envía una Adaptive Card con el proyecto observado, cuando está disponible, los microservicios detectados y las URLs de Pull Request encontradas en `Descripción Detallada de la Solicitud`. Para solicitudes de análisis de código estático sin microservicios explícitos, también puede tomar los nombres de paquetes de código adjuntos (`.7z`, `.zip`, `.rar`, `.tar.gz`), sin usar informes PDF ni inferir el proyecto. El botón `Abrir REQ` usa el enlace compartible oficial de MiAsistencia360 y dirige al detalle específico después de autenticarse. Un HTTP `202 Accepted` confirma que Power Automate recibió la solicitud; confirma la publicación en Teams desde el historial de ejecuciones del workflow.
 
 ### Ejecución programada
 
@@ -149,18 +157,26 @@ curl -X POST http://127.0.0.1:8787/api/monitor/run
 curl http://127.0.0.1:8787/api/monitor/status
 ```
 
+Para una ejecución manual parcial, envía `{"reqs":["REQ123","REQ456"]}` a `POST /api/monitor/run`. La API rechaza selecciones vacías, REQ que no estén en la lista monitoreada y REQ bloqueadas. Una solicitud sin `reqs` ejecuta todas las REQ disponibles (no bloqueadas). Las ejecuciones programadas aplican el mismo bloqueo. Una REQ cuyo estado literal del portal sea `Finalizado` queda bloqueada hasta que se desbloquee desde Acciones; el desbloqueo se conserva tras recargar y permite una nueva revisión aunque continúe `Finalizado`. Si esa revisión vuelve a devolver `Finalizado`, queda bloqueada otra vez. El candado abierto permite volver a bloquearla antes de esa revisión.
+
+Cuando una REQ previamente notificada como «Pendiente de respuesta» pasa a «Respondida», se envía una tarjeta nueva de resolución sin «Acción requerida». Las tarjetas muestran los datos principales como campos etiquetados y separan comentarios y adjuntos del botón para abrir la REQ. Los webhooks de Teams no modifican tarjetas enviadas anteriormente; las tarjetas históricas permanecen como registro del estado anterior.
+
 API no usa token y debe permanecer publicada exclusivamente en `127.0.0.1`.
 
 ## Interfaz web
 
 Con API activa, abre `http://127.0.0.1:8787`. La interfaz permite:
 
-- Ver estado y última revisión de las REQ monitoreadas.
+- Ver estado y última revisión de las REQ monitoreadas, ordenadas de la última revisión a la primera; las REQ nuevas sin revisión aparecen al inicio.
 - La tabla muestra el estado literal observado en el portal; si falta, indica «Estado no disponible». El estado de conversación calculado aparece por separado en «Ver detalles» y sigue rigiendo alertas y recordatorios.
 - El proyecto se extrae únicamente de una línea explícita `Proyecto:` en la descripción detallada del portal; no se deduce del microservicio ni del título. La tabla, «Ver detalles» y la consulta manual muestran «Proyecto no disponible» o «No disponible» cuando falta. Para actualizar resultados ya guardados, ejecuta de nuevo el monitor; «Actualizar» solo recarga datos locales.
 - «Ver detalles» despliega únicamente datos ya guardados: descripción, instrucciones, metadatos, solicitante y fechas disponibles. Los datos personales permanecen ocultos hasta abrir el panel; los campos ausentes se indican como no disponibles. No realiza una consulta adicional al portal.
-- Agregar y eliminar REQ de `runtime/reqs.txt`.
-- Ejecutar monitor completo bajo demanda.
+- Pegar una o varias REQ, separadas por comas, espacios o saltos de línea, para agregarlas al monitoreo en una sola operación sin iniciar su análisis; también se pueden eliminar de `runtime/reqs.txt`. El scheduler independiente podrá analizarlas en su siguiente ciclo permitido.
+- En **Configuración**, ajustar el intervalo automático de 0 a 1440 minutos (`0` pausa el scheduler). Se guarda en `runtime/settings.json`, se aplica al próximo ciclo sin iniciar uno inmediato y prevalece sobre `MONITOR_INTERVAL_MINUTES`; los monitoreos manuales siguen disponibles.
+- Seleccionar en la tabla qué REQ disponibles ejecutar con **Ejecutar monitor**; sin selección, el botón no inicia nada. Las REQ bloqueadas con estado del portal `Finalizado` no se ejecutan ni manual ni automáticamente, sin eliminarlas de la lista ni borrar sus resultados.
+- La casilla de la cabecera de selección, a la izquierda de «Proyecto / Microservicio / REQ», marca o desmarca todas las REQ no bloqueadas, incluso las ocultas por filtros o en otras páginas.
+- **Ejecutar todas** selecciona las REQ no bloqueadas y arranca una ejecución manual con un clic. **Ejecutar monitor** conserva la ejecución de solo las REQ seleccionadas.
+- El candado en **Acciones** desbloquea una REQ `Finalizado` para una nueva revisión incluso si sigue con ese estado; si la revisión vuelve a devolver `Finalizado`, se bloquea automáticamente. Se puede bloquear antes con el mismo control. La fila coloreada identifica la REQ que está en revisión, sin texto adicional junto al número.
 - Consultar una REQ específica sin agregarla al monitoreo ni enviar alertas a Teams.
 - Descargar adjuntos mediante sesión autenticada del backend, sin abrir enlaces REST expirados.
 - Consultar desde `Acceso` si existe una sesión local y ver el usuario ingresado anteriormente, sin exponer contraseña ni cookies. Su presencia no confirma que el portal permita el acceso; `GET /api/auth/status` devuelve únicamente `localSessionAvailable` y `username`.
@@ -181,6 +197,7 @@ curl -X POST http://127.0.0.1:8787/api/reqs/query \
 El contenedor ejecuta API y scheduler interno. No necesita cron dentro del contenedor ni un archivo `.env` para iniciar sin alertas de Teams.
 
 ```bash
+install -d -m 700 runtime artifacts playwright/.auth
 docker compose up -d --build
 docker compose ps
 ```
@@ -202,5 +219,26 @@ docker compose logs -f monitor
 docker compose restart monitor
 docker compose down
 ```
+
+### Acceso mediante túnel SSH y Nginx
+
+La API no incluye autenticación propia. Mantén Docker en `127.0.0.1:8787` y Nginx en `127.0.0.1:8088`; **no** publiques ninguno de esos puertos. SSH controla quién puede abrir el túnel. No cambies el sitio Nginx existente que atiende el puerto 80.
+
+Desde la raíz del proyecto en el servidor, instala el sitio separado (requiere privilegios de administrador):
+
+```bash
+sudo install -m 644 deploy/nginx-ssh-tunnel.conf /etc/nginx/sites-available/req-monitor-ssh
+sudo ln -s /etc/nginx/sites-available/req-monitor-ssh /etc/nginx/sites-enabled/req-monitor-ssh
+sudo nginx -t && sudo systemctl reload nginx
+curl -fsS http://127.0.0.1:8088/health
+```
+
+Desde tu computadora, abre el túnel con una cuenta SSH autorizada para esta máquina (sustituye `usuario@servidor` por tu conexión habitual):
+
+```bash
+ssh -N -L 127.0.0.1:8088:127.0.0.1:8088 usuario@servidor
+```
+
+Mientras esa conexión esté abierta, visita `http://127.0.0.1:8088` **en tu computadora**. Si el puerto 8088 está ocupado allí, cambia solo el primer `8088` del comando SSH y usa ese mismo puerto en el navegador. El túnel cifra el transporte; no convierte el panel en un servicio público ni reemplaza la protección de tu cuenta SSH.
 
 El monitor intenta reutilizar el estado local primero; un archivo presente no garantiza una sesión vigente ni implica renovación automática. Si el portal exige iniciar sesión, usa `Acceso` y proporciona la contraseña manualmente. Los errores de red no demuestran que la sesión haya expirado. La sesión Playwright y la etiqueta de usuario ingresado persisten en el volumen `playwright/.auth`; la contraseña no. La API no tiene autenticación propia: mantenla exclusivamente en el loopback local y protege el directorio montado como credencial.

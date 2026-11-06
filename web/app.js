@@ -1,19 +1,30 @@
 const state = {
   dashboard: null, resultsByReq: new Map(),
   accessPromptedRun: null, alertedMonitorRun: null,
+  outsideHoursSaving: false,
+  runRequestPending: false,
 };
 let dashboardRequestSequence = 0;
 let progressPollTimer = null;
+let gridApi = null;
 
 const elements = {
   list: document.querySelector("#req-grid"),
   empty: document.querySelector("#empty-state"),
   run: document.querySelector("#run-button"),
+  runAll: document.querySelector("#run-all-button"),
+  selectionCount: document.querySelector("#selection-count"),
+  outsideHours: document.querySelector("#outside-hours-button"),
+  intervalForm: document.querySelector("#interval-form"),
+  intervalInput: document.querySelector("#interval-minutes"),
   refresh: document.querySelector("#refresh-button"),
   addForm: document.querySelector("#add-form"),
   queryForm: document.querySelector("#query-form"),
   queryResult: document.querySelector("#query-result"),
+  detailsDialog: document.querySelector("#req-details-dialog"),
+  detailsContent: document.querySelector("#req-details-content"),
   filterCount: document.querySelector("#filter-count"),
+  liveProgress: document.querySelector("#live-progress"),
   credentialsButton: document.querySelector("#credentials-button"),
   credentialsDialog: document.querySelector("#credentials-dialog"),
   credentialsForm: document.querySelector("#credentials-form"),
@@ -39,6 +50,8 @@ function safeUrl(value) {
 }
 
 const actionIcons = {
+  lock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0v3"/>',
+  unlock: '<rect x="5" y="10" width="14" height="11" rx="2"/><path d="M8 10V7a4 4 0 0 1 8 0V5"/>',
   details: '<path d="M3 12s3.5-6 9-6 9 6 9 6-3.5 6-9 6-9-6-9-6Z"/><circle cx="12" cy="12" r="2.5"/>',
   query: '<path d="M20 11a8 8 0 0 0-14-4L4 9m0-5v5h5M4 13a8 8 0 0 0 14 4l2-2m0 5v-5h-5"/>',
   delete: '<path d="M4 7h16M10 4h4M6 7l1 13h10l1-13M10 11v6m4-6v6"/>',
@@ -78,6 +91,10 @@ function statedDeadline(result) {
 
 function normalizeReq(value) {
   return value.trim().toUpperCase();
+}
+
+function parseReqList(value) {
+  return [...new Set(value.split(/[\s,;]+/).map(normalizeReq).filter(Boolean))];
 }
 
 function fileType(name) {
@@ -181,14 +198,15 @@ function updateMonitor(monitor, schedule, progress, reqs) {
       : monitor.activeTask === "auth"
         ? "Renovando sesión"
         : schedule?.allowed
-          ? "Monitor disponible"
+          ? (schedule.reason === "fuera de horario habilitado" ? "Fuera de horario habilitado" : "Monitor disponible")
           : "Fuera de horario";
   document.querySelector("#monitor-label").textContent = label;
   const currentProgress = monitor?.running && progress?.startedAt === monitor.startedAt;
-  const analyzed = currentProgress ? reqs.filter((req) => progress.items?.[req] === "success").length : 0;
-  const activeReq = currentProgress ? reqs.find((req) => progress.items?.[req] === "running") : null;
+  const runReqs = monitor.selectedReqs ?? reqs;
+  const analyzed = currentProgress ? runReqs.filter((req) => progress.items?.[req] === "success").length : 0;
+  const activeReq = currentProgress ? runReqs.find((req) => progress.items?.[req] === "running") : null;
   const monitorTime = currentProgress
-    ? `Analizadas ${analyzed} de ${reqs.length}${activeReq ? ` · Ahora: ${activeReq}` : ""}`
+    ? `Analizadas ${analyzed} de ${runReqs.length}${activeReq ? ` · Ahora: ${activeReq}` : ""}`
     : !busy && schedule && !schedule.allowed
       ? schedule.reason
       : monitor.finishedAt
@@ -198,8 +216,51 @@ function updateMonitor(monitor, schedule, progress, reqs) {
   if (timeElement.textContent !== monitorTime) timeElement.textContent = monitorTime;
   const scheduledAccess = schedule?.allowed !== false;
   document.querySelector("#status-dot").className = `status-dot ${busy ? "running" : scheduledAccess ? "ready" : "off"}`;
-  elements.run.disabled = busy || !scheduledAccess;
+  elements.outsideHours.disabled = busy || state.outsideHoursSaving;
+  updateRunSelection();
   elements.queryForm.querySelector("button").disabled = busy;
+}
+
+function selectedReqs() {
+  const selected = new Set(gridApi?.getSelectedRows?.().map((row) => row.req) ?? []);
+  return eligibleDashboardReqs().filter((req) => selected.has(req));
+}
+
+function eligibleDashboardReqs() {
+  const locked = new Set(state.dashboard?.lockedReqs ?? []);
+  return state.dashboard?.reqs.filter((req) => !locked.has(req)) ?? [];
+}
+
+function updateRunSelection() {
+  const count = selectedReqs().length;
+  const total = eligibleDashboardReqs().length;
+  const unavailable = Boolean(state.dashboard?.monitor?.activeTask) || state.dashboard?.schedule?.allowed === false || state.runRequestPending;
+  elements.selectionCount.textContent = count ? `${count} REQ seleccionadas` :
+    state.dashboard?.reqs.length && !total ? "Todas las REQ están bloqueadas" : "Seleccioná REQ en la tabla";
+  elements.run.disabled = !count || unavailable;
+  elements.runAll.disabled = !gridApi || !total || unavailable;
+}
+
+async function runManualMonitor(reqs) {
+  if (!reqs.length) { toast("Seleccioná al menos una REQ"); return; }
+  if (state.runRequestPending || state.dashboard?.monitor?.activeTask || state.dashboard?.schedule?.allowed === false) return;
+  state.runRequestPending = true;
+  updateRunSelection();
+  try {
+    await api("/api/monitor/run", { method: "POST", body: JSON.stringify({ reqs }) });
+    await loadDashboard();
+    toast("Monitor iniciado");
+  } catch (error) { toast(error.message); }
+  finally { state.runRequestPending = false; updateRunSelection(); }
+}
+
+async function runAllReqs() {
+  const total = eligibleDashboardReqs().length;
+  if (!gridApi || !total || state.runRequestPending || state.dashboard.monitor?.activeTask || state.dashboard.schedule?.allowed === false) return;
+  gridApi.selectAll();
+  const reqs = selectedReqs();
+  if (reqs.length !== total) { toast("No se pudieron seleccionar todas las REQ disponibles"); return; }
+  await runManualMonitor(reqs);
 }
 
 function portalStatusLabel(result) {
@@ -228,21 +289,22 @@ const gridOptions = {
       filterValueGetter: ({ data }) => data ? [data.req, data.project, data.microservices].join(" ") : "",
       cellRenderer: ({ data }) => {
         if (!data) return "";
-        return `<div class="req-identity"><span class="req-project">${escapeHtml(data.project)}</span>${data.microservices ? `<span class="req-service">${escapeHtml(data.microservices)}</span>` : ""}<div class="req-id-line"><button class="req-number req-copy" data-copy="${escapeHtml(data.req)}" type="button" aria-label="Copiar ${escapeHtml(data.req)}" title="Copiar número de REQ">${escapeHtml(data.req)}</button>${data.monitorProgress ? `<span class="monitor-progress ${data.progressClass}" aria-label="Monitoreo: ${data.monitorProgress}">${data.monitorProgress}</span>` : ""}</div></div>`;
+        return `<div class="req-identity"><span class="req-project">${escapeHtml(data.project)}</span>${data.microservices ? `<span class="req-service">${escapeHtml(data.microservices)}</span>` : ""}<div class="req-id-line"><button class="req-number req-copy" data-copy="${escapeHtml(data.req)}" type="button" aria-label="Copiar ${escapeHtml(data.req)}" title="Copiar número de REQ">${escapeHtml(data.req)}</button></div></div>`;
       } },
     { headerName: "Estado del portal", field: "status", minWidth: 170, flex: 1,
       cellRenderer: ({ data }) => data ? `<span class="badge portal-status ${portalStatusTone(data.result)}">${escapeHtml(data.status)}</span>` : "" },
     { headerName: "Detalle", field: "detail", minWidth: 250, flex: 2,
       cellRenderer: ({ data }) => data ? `<div class="req-title">${escapeHtml(data.detail)}</div>` : "" },
-    { headerName: "Plazo y revisión", field: "checkedAt", minWidth: 230, flex: 1, autoHeight: true,
-      comparator: (a, b) => (Date.parse(a) || 0) - (Date.parse(b) || 0),
+    { headerName: "Plazo y revisión", field: "checkedAt", minWidth: 310, flex: 1.4, autoHeight: true,
+      sort: "desc", valueGetter: ({ data }) => data?.checkedAt ? Date.parse(data.checkedAt) || 0 : Number.MAX_SAFE_INTEGER,
+      comparator: (a, b) => a - b,
       filterValueGetter: ({ data }) => data ? [data.deadline, formatDate(data.checkedAt), data.checkedAt, data.progressLabel].join(" ") : "",
       cellRenderer: ({ data }) => data ? `<div class="req-review">
         <div class="req-review-line"><span class="req-review-label">Plazo:</span> ${escapeHtml(data.deadline)}</div>
         <div class="req-review-line"><span class="req-review-label">Última revisión:</span> ${escapeHtml(formatDate(data.checkedAt))}${data.progressLabel
           ? `<span class="review-indicator ${data.progressClass}" role="img" aria-label="Monitoreo: ${escapeHtml(data.progressLabel)}" title="Monitoreo: ${escapeHtml(data.progressLabel)}"></span>` : ""}</div>
       </div>` : "" },
-    { headerName: "Acciones", colId: "actions", minWidth: 205, sortable: false, filter: false, autoHeight: true,
+    { headerName: "Acciones", colId: "actions", minWidth: 240, sortable: false, filter: false, autoHeight: true,
       cellRenderer: ({ data }) => {
         if (!data) return "";
         const url = data.result?.detailUrl ? safeUrl(data.result.detailUrl) : "#";
@@ -250,14 +312,21 @@ const gridOptions = {
           ? `<button class="secondary icon-action" type="button" aria-label="Enlace de MiAsistencia360 no disponible" title="Enlace no disponible" disabled>${actionIcon("portal")}</button>`
           : `<a class="secondary icon-action" href="${url}" target="_blank" rel="noopener noreferrer" aria-label="Abrir ${escapeHtml(data.req)} en MiAsistencia360" title="Abrir en MiAsistencia360">${actionIcon("portal")}</a>`;
         return `<div class="row-actions">
-          <button class="secondary icon-action" data-details="${escapeHtml(data.req)}" type="button" aria-expanded="false" aria-label="Ver detalles de ${escapeHtml(data.req)}" title="Ver detalles">${actionIcon("details")}</button>
+          <button class="secondary icon-action" data-details="${escapeHtml(data.req)}" type="button" aria-label="Ver detalles de ${escapeHtml(data.req)}" title="Ver detalles">${actionIcon("details")}</button>
           <button class="secondary icon-action" data-query="${escapeHtml(data.req)}" type="button" aria-label="Consultar ${escapeHtml(data.req)}" title="Consultar">${actionIcon("query")}</button>
           ${portal}
+          ${data.result?.status?.trim() === "Finalizado" ? `<button class="secondary icon-action" data-lock="${escapeHtml(data.req)}" data-locked="${data.locked}" type="button" aria-label="${data.locked ? "Desbloquear" : "Bloquear"} ${escapeHtml(data.req)}" title="${data.locked ? "Desbloquear" : "Bloquear"} REQ" ${data.lockActionDisabled ? "disabled" : ""}>${actionIcon(data.locked ? "lock" : "unlock")}</button>` : ""}
           <button class="danger-button icon-action" data-delete="${escapeHtml(data.req)}" type="button" aria-label="Borrar ${escapeHtml(data.req)}" title="Borrar">${actionIcon("delete")}</button>
-        </div><div class="grid-details" hidden></div>`;
+        </div>`;
       } },
   ],
   defaultColDef: { sortable: true, filter: true, resizable: true },
+  rowSelection: { mode: "multiRow", checkboxes: ({ node }) => !node.data?.locked,
+    isRowSelectable: (node) => Boolean(node.data && !node.data.locked), headerCheckbox: true,
+    selectAll: "all", enableClickSelection: false },
+  selectionColumnDef: { width: 48, pinned: "left", headerTooltip: "Seleccionar REQ para ejecución manual" },
+  onSelectionChanged: () => updateRunSelection(),
+  rowClassRules: { "req-active": ({ data }) => data?.active === true },
   getRowId: ({ data }) => data.req,
   pagination: true,
   paginationPageSize: 10,
@@ -268,7 +337,7 @@ const gridOptions = {
   localeText: { noRowsToShow: "No hay REQ para mostrar", page: "Página", of: "de", to: "a", filterOoo: "Filtrar...", contains: "Contiene", equals: "Igual a" },
   onModelUpdated: () => updateGridCount(),
 };
-let gridApi = typeof agGrid !== "undefined" && agGrid.createGrid
+gridApi = typeof agGrid !== "undefined" && agGrid.createGrid
   ? agGrid.createGrid(elements.list, gridOptions) : null;
 
 function updateGridCount() {
@@ -282,35 +351,46 @@ function updateGridCount() {
 function renderRows(reqs, results, progress = null, monitor = null) {
   const byReq = new Map(results.map((result) => [result.req, result]));
   state.resultsByReq = byReq;
+  const currentProgress = monitor?.running && progress?.startedAt === monitor.startedAt;
+  const runReqs = monitor?.selectedReqs ?? reqs;
+  const activeReq = currentProgress ? runReqs.find((req) => progress.items?.[req] === "running") : null;
+  const analyzed = currentProgress ? runReqs.filter((req) => progress.items?.[req] === "success").length : 0;
+  elements.liveProgress.hidden = !currentProgress;
+  const liveMessage = currentProgress
+    ? `${activeReq ? `Monitoreando ahora: ${activeReq}` : "Preparando siguiente REQ"} · ${analyzed} de ${runReqs.length} revisadas`
+    : "";
+  if (elements.liveProgress.textContent !== liveMessage) elements.liveProgress.textContent = liveMessage;
   if (!gridApi) {
     elements.empty.hidden = false;
     elements.empty.textContent = "Tabla no disponible. Actualizá la página para volver a cargar AG Grid.";
     updateFilterCount(reqs.length, 0);
     return;
   }
-  const rowData = reqs.map((req) => {
+  const rowData = [...reqs].reverse().map((req) => {
     const result = byReq.get(req) || null;
     const inRun = progress?.startedAt && progress.startedAt === monitor?.startedAt;
-    const checked = inRun ? progress.items?.[req] : null;
+    const inScope = !monitor?.selectedReqs || monitor.selectedReqs.includes(req);
+    const checked = inRun && inScope ? progress.items?.[req] : null;
     return {
       req, result,
+      locked: Boolean(state.dashboard?.lockedReqs?.includes(req)),
+      lockActionDisabled: Boolean(state.dashboard?.monitor?.activeTask),
       project: result?.projectName?.trim() || "Proyecto no disponible",
-      microservices: Array.isArray(result?.microservices) ? result.microservices.filter(Boolean).join(", ") : "",
+      microservices: Array.isArray(result?.microservices)
+        ? result.microservices.filter(Boolean).join(", ").replace(/,\s*/g, ", ") : "",
       status: portalStatusLabel(result), deadline: statedDeadline(result),
       detail: webError(result?.error) || result?.title || "Información no disponible",
       checkedAt: result?.checkedAt || null,
-      monitorProgress: monitor?.running && inRun
-        ? checked === "running" ? "Analizando" : checked === "success" ? "Analizada" :
-          checked === "error" ? "Error" : "En espera"
-        : "",
-      progressLabel: !inRun ? "" : checked === "running" ? "En revisión" :
-        checked === "success" ? monitor?.running ? "Consultada · resultados al finalizar" : "Revisada" :
-          checked === "error" ? "Error de revisión" : monitor?.running ? "Pendiente" : "No revisada",
+      active: Boolean(monitor?.running && checked === "running"),
+      progressLabel: checked === "running" ? "En revisión" :
+        checked === "success" ? "Revisada" : checked === "error" ? "Error de revisión" : "",
       progressClass: checked === "running" ? "running" : checked === "success" ? "success" :
         checked === "error" ? "error" : "waiting",
     };
   });
   gridApi.setGridOption("rowData", rowData);
+  gridApi.refreshCells({ force: true, columns: ["req", "actions"] });
+  updateRunSelection();
   updateGridCount();
 }
 
@@ -351,16 +431,8 @@ function toggleDetails(button) {
   const req = button.dataset.details;
   const result = state.resultsByReq.get(req);
   if (!result) return;
-  const panel = button.parentElement?.nextElementSibling;
-  if (!panel) return;
-  const open = panel.hidden;
-  panel.hidden = !open;
-  panel.innerHTML = open ? renderStoredDetails(result) : "";
-  button.setAttribute("aria-expanded", String(open));
-  const label = open ? "Ocultar detalles" : "Ver detalles";
-  button.setAttribute("aria-label", `${label} de ${req}`);
-  button.title = label;
-  gridApi?.resetRowHeights();
+  elements.detailsContent.innerHTML = renderStoredDetails(result);
+  elements.detailsDialog.showModal();
 }
 
 function renderDashboard(data) {
@@ -368,14 +440,21 @@ function renderDashboard(data) {
   renderAuthStatus(data.auth);
   updateSummary(data.reqs, data.results);
   updateMonitor(data.monitor, data.schedule, data.progress, data.reqs);
+  const outsideHoursEnabled = data.settings?.allowOutsideHoursRuns === true;
+  elements.outsideHours.setAttribute("aria-pressed", String(outsideHoursEnabled));
+  elements.outsideHours.textContent = outsideHoursEnabled ? "Restringir a horario laboral" : "Habilitar fuera de horario";
+  if (elements.intervalInput && document.activeElement !== elements.intervalInput) {
+    elements.intervalInput.value = String(data.settings?.intervalMinutes ?? data.schedule?.intervalMinutes ?? 15);
+  }
   renderRows(data.reqs, data.results, data.progress, data.monitor);
   updateProgressPolling(Boolean(data.monitor?.running));
   const monitor = data.monitor;
   if (monitor?.startedAt && !monitor.running && monitor.exitCode !== null &&
     data.progress?.startedAt === monitor.startedAt && state.alertedMonitorRun !== monitor.startedAt) {
     state.alertedMonitorRun = monitor.startedAt;
-    const total = data.reqs.length;
-    const notReviewed = data.reqs.filter((req) => data.progress.items?.[req] !== "success").length;
+    const runReqs = monitor.selectedReqs ?? data.reqs;
+    const total = runReqs.length;
+    const notReviewed = runReqs.filter((req) => data.progress.items?.[req] !== "success").length;
     if (total && notReviewed === total) toast("No se pudo revisar ninguna REQ en esta ejecución");
     else if (notReviewed) toast(`No se pudieron revisar ${notReviewed} de ${total} REQ`);
     else if (monitor.exitCode !== 0) toast("El monitoreo terminó con errores");
@@ -570,6 +649,8 @@ elements.credentialsButton.addEventListener("click", () => {
   openCredentialsDialog();
 });
 
+document.querySelector("#req-details-close").addEventListener("click", () => elements.detailsDialog.close());
+
 document.querySelector("#credentials-cancel").addEventListener("click", () => {
   document.querySelector("#credentials-password").value = "";
   elements.credentialsDialog.close();
@@ -607,12 +688,34 @@ elements.credentialsForm.addEventListener("submit", async (event) => {
 elements.addForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   const input = document.querySelector("#add-req");
+  const reqs = parseReqList(input.value);
+  if (!reqs.length) { toast("Ingresa al menos una REQ"); return; }
   try {
-    await api("/api/reqs", { method: "POST", body: JSON.stringify({ req: normalizeReq(input.value) }) });
+    await api("/api/reqs", { method: "POST", body: JSON.stringify({ reqs }) });
     input.value = "";
     await loadDashboard();
-    toast("REQ agregada al monitoreo");
+    toast(`${reqs.length} REQ agregadas al monitoreo`);
   } catch (error) { toast(error.message); }
+});
+
+elements.intervalForm?.addEventListener("submit", async (event) => {
+  event.preventDefault();
+  const value = Number(elements.intervalInput.value);
+  if (!Number.isInteger(value) || value < 0 || value > 1440) {
+    toast("El intervalo debe ser un número entero entre 0 y 1440 minutos");
+    return;
+  }
+  const button = elements.intervalForm.querySelector('button[type="submit"]');
+  button.disabled = true;
+  try {
+    await api("/api/settings/interval", { method: "PUT", body: JSON.stringify({ intervalMinutes: value }) });
+    await loadDashboard(true);
+    toast(value === 0 ? "Monitor automático pausado" : `Intervalo automático: ${value} minutos`);
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    button.disabled = false;
+  }
 });
 
 elements.queryForm.addEventListener("submit", (event) => {
@@ -643,6 +746,23 @@ elements.list.addEventListener("click", async (event) => {
     queryReq(queryButton.dataset.query);
     return;
   }
+  const lockButton = event.target.closest("[data-lock]");
+  if (lockButton) {
+    if (state.runRequestPending || state.dashboard?.monitor?.activeTask) return;
+    lockButton.disabled = true;
+    state.runRequestPending = true;
+    updateRunSelection();
+    try {
+      const locked = lockButton.dataset.locked !== "true";
+      await api(`/api/reqs/${encodeURIComponent(lockButton.dataset.lock)}/lock`, {
+        method: "PUT", body: JSON.stringify({ locked }),
+      });
+      await loadDashboard();
+      toast(locked ? "REQ bloqueada" : "REQ desbloqueada");
+    } catch (error) { toast(error.message); }
+    finally { state.runRequestPending = false; updateRunSelection(); lockButton.disabled = false; }
+    return;
+  }
   const deleteButton = event.target.closest("[data-delete]");
   if (!deleteButton || !window.confirm(`¿Dejar de monitorear ${deleteButton.dataset.delete}?`)) return;
   try {
@@ -652,12 +772,28 @@ elements.list.addEventListener("click", async (event) => {
   } catch (error) { toast(error.message); }
 });
 
-elements.run.addEventListener("click", async () => {
+elements.run.addEventListener("click", () => runManualMonitor(selectedReqs()));
+elements.runAll.addEventListener("click", runAllReqs);
+
+elements.outsideHours.addEventListener("click", async () => {
+  if (state.outsideHoursSaving) return;
+  const enabled = elements.outsideHours.getAttribute("aria-pressed") === "true";
+  state.outsideHoursSaving = true;
+  elements.outsideHours.disabled = true;
   try {
-    await api("/api/monitor/run", { method: "POST" });
+    const saved = await api("/api/settings/outside-hours", {
+      method: "PUT", body: JSON.stringify({ allowOutsideHoursRuns: !enabled }),
+    });
+    elements.outsideHours.setAttribute("aria-pressed", String(saved.allowOutsideHoursRuns));
+    elements.outsideHours.textContent = saved.allowOutsideHoursRuns ? "Restringir a horario laboral" : "Habilitar fuera de horario";
     await loadDashboard();
-    toast("Monitor iniciado");
-  } catch (error) { toast(error.message); }
+    toast(enabled ? "Monitor restringido a horario laboral" : "Monitor habilitado fuera de horario (manual y automático)");
+  } catch (error) {
+    toast(error.message);
+  } finally {
+    state.outsideHoursSaving = false;
+    elements.outsideHours.disabled = Boolean(state.dashboard?.monitor?.activeTask);
+  }
 });
 
 elements.refresh.addEventListener("click", () => loadDashboard());
