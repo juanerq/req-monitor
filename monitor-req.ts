@@ -66,6 +66,7 @@ type StoredState = Record<
 
 type Options = {
   file: string;
+  reqs: string[];
   output: string;
   state: string;
   dryRun: boolean;
@@ -77,11 +78,13 @@ function printHelp(): void {
 Uso:
   pnpm monitor-req
   pnpm monitor-req --file reqs.txt
+  pnpm monitor-req --req REQ123 --req REQ456
   pnpm monitor-req --dry-run
   pnpm monitor-req --test-notification
 
 Opciones:
   --file <ruta>          Archivo con una REQ por línea
+  --req <número>         Monitorear solo esta REQ (repetible, sin --file)
   --output <ruta>        Resultado detallado de la consulta
   --state <ruta>         Estado usado para evitar alertas repetidas
   --dry-run              Mostrar alertas sin enviarlas ni guardar estado
@@ -93,12 +96,14 @@ Opciones:
 function parseArgs(args: string[]): Options {
   const options: Options = {
     file: DEFAULT_REQ_FILE,
+    reqs: [],
     output: DEFAULT_RESULTS_FILE,
     state: DEFAULT_STATE_FILE,
     dryRun: false,
     testNotification: false,
   };
 
+  let fileProvided = false;
   for (let index = 0; index < args.length; index += 1) {
     const arg = args[index];
     if (arg === "--help") {
@@ -113,19 +118,23 @@ function parseArgs(args: string[]): Options {
       options.testNotification = true;
       continue;
     }
-    if (["--file", "--output", "--state"].includes(arg)) {
+    if (["--file", "--req", "--output", "--state"].includes(arg)) {
       const value = args[index + 1];
       if (!value || value.startsWith("--")) {
         throw new Error(`Falta el valor de ${arg}`);
       }
       index += 1;
-      if (arg === "--file") options.file = value;
+      if (arg === "--file") { options.file = value; fileProvided = true; }
+      if (arg === "--req") options.reqs.push(value.toUpperCase());
       if (arg === "--output") options.output = value;
       if (arg === "--state") options.state = value;
       continue;
     }
     throw new Error(`Opción desconocida: ${arg}`);
   }
+  if (fileProvided && options.reqs.length) throw new Error("--file y --req no pueden combinarse");
+  if (options.reqs.some((req) => !/^REQ\d+$/.test(req))) throw new Error("REQ inválida en --req");
+  options.reqs = [...new Set(options.reqs)];
   return options;
 }
 
@@ -141,8 +150,16 @@ function saveState(file: string, state: StoredState): void {
   fs.renameSync(temporary, file);
 }
 
+export function mergeReqResults<T extends { req: string }>(existing: T[], results: T[]): T[] {
+  const updated = new Map(results.map((result) => [result.req, result]));
+  const known = new Set(existing.map((result) => result.req));
+  const merged = existing.map((result) => updated.get(result.req) ?? result);
+  for (const result of updated.values()) if (!known.has(result.req)) merged.push(result);
+  return merged;
+}
+
 function runReqCheck(options: Options): ReqResult[] {
-  if (!fs.existsSync(options.file)) {
+  if (!options.reqs.length && !fs.existsSync(options.file)) {
     throw new Error(`No existe ${options.file}. Usa reqs.txt.example como referencia`);
   }
   fs.mkdirSync(path.dirname(options.output), { recursive: true });
@@ -152,7 +169,7 @@ function runReqCheck(options: Options): ReqResult[] {
   const pnpm = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
   const result = spawnSync(
     pnpm,
-    ["check-req", "--file", options.file, "--output", temporaryOutput],
+    ["check-req", ...(options.reqs.length ? options.reqs.flatMap((req) => ["--req", req]) : ["--file", options.file]), "--output", temporaryOutput],
     { stdio: "inherit", env: process.env },
   );
 
@@ -162,6 +179,18 @@ function runReqCheck(options: Options): ReqResult[] {
   }
 
   const results = JSON.parse(fs.readFileSync(temporaryOutput, "utf8")) as ReqResult[];
+  if (options.reqs.length) {
+    if (!Array.isArray(results) || results.some((result) => !options.reqs.includes(result.req))) {
+      throw new Error("Resultado de selección inválido");
+    }
+    const existing = fs.existsSync(options.output)
+      ? JSON.parse(fs.readFileSync(options.output, "utf8")) as ReqResult[] : [];
+    if (!Array.isArray(existing) || existing.some((result) => !result || typeof result.req !== "string")) {
+      throw new Error("Resultados guardados inválidos; no se reemplazarán");
+    }
+    const merged = mergeReqResults(existing, results);
+    fs.writeFileSync(temporaryOutput, `${JSON.stringify(merged, null, 2)}\n`, "utf8");
+  }
   fs.renameSync(temporaryOutput, options.output);
   if (result.status !== 0) {
     console.warn("La consulta terminó con errores; se procesarán solo las REQ válidas");

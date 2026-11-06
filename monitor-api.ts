@@ -8,6 +8,7 @@ import { chromium } from "playwright";
 import { authFilePath, loadAuthEnvironment, localAuthStatus, saveAuthSession, validateUsername } from "./auth-session.js";
 import { monitorAuthErrorDetector } from "./monitor-auth.js";
 import { readMonitorProgress } from "./monitor-progress.js";
+import { eligibleReqs, isValidReviewTime, lockedFinalizedReqs } from "./finalized-req-lock.js";
 
 loadAuthEnvironment();
 
@@ -42,6 +43,7 @@ const holidayCache = new Map<number, Map<string, string>>();
 
 type MonitorStatus = {
   running: boolean;
+  selectedReqs: string[] | null;
   startedAt: string | null;
   finishedAt: string | null;
   exitCode: number | null;
@@ -50,6 +52,9 @@ type MonitorStatus = {
 
 type MonitorSettings = {
   teamsWebhookUrl?: string;
+  allowOutsideHoursRuns?: boolean;
+  unlockedFinalizedReqs?: Record<string, string>;
+  intervalMinutes?: number;
 };
 
 type ScheduleDecision = {
@@ -59,8 +64,12 @@ type ScheduleDecision = {
 
 let child: ChildProcess | null = null;
 let activeTask: "monitor" | "query" | "auth" | null = null;
+let allowOutsideHoursRuns = false;
+let intervalMinutes = INTERVAL_MINUTES;
+let nextMonitorTimer: ReturnType<typeof setTimeout> | null = null;
 const monitorStatus: MonitorStatus = {
   running: false,
+  selectedReqs: null,
   startedAt: null,
   finishedAt: null,
   exitCode: null,
@@ -119,6 +128,13 @@ function scheduleDecision(now = new Date()): ScheduleDecision {
   return (morning || afternoon)
     ? { allowed: true, reason: "horario laboral" }
     : { allowed: false, reason: "fuera del horario laboral" };
+}
+
+function effectiveScheduleDecision(now = new Date()): ScheduleDecision {
+  const decision = scheduleDecision(now);
+  return !decision.allowed && allowOutsideHoursRuns
+    ? { allowed: true, reason: "fuera de horario habilitado" }
+    : decision;
 }
 
 function scheduleError(decision: ScheduleDecision): string {
@@ -189,13 +205,57 @@ function readResults(): unknown[] {
   }
 }
 
+function readLockResults(): { req: string; status?: string | null; checkedAt?: string | null }[] {
+  if (!fs.existsSync(RESULTS_FILE)) return [];
+  const value = JSON.parse(fs.readFileSync(RESULTS_FILE, "utf8")) as unknown;
+  if (!Array.isArray(value) || value.some((result) => !result || typeof result !== "object" ||
+    typeof result.req !== "string" || !REQ_PATTERN.test(result.req) ||
+    (result.status != null && typeof result.status !== "string") ||
+    (result.checkedAt != null && typeof result.checkedAt !== "string"))) {
+    throw new Error("Resultados guardados inválidos; no se iniciará el monitor");
+  }
+  return value as { req: string; status?: string | null; checkedAt?: string | null }[];
+}
+
+function currentLockedReqs(configured = readReqs()): string[] {
+  return lockedFinalizedReqs(configured, readLockResults(), readSettings().unlockedFinalizedReqs ?? {});
+}
+
+function currentEligibleReqs(configured = readReqs()): string[] {
+  return eligibleReqs(configured, readLockResults(), readSettings().unlockedFinalizedReqs ?? {});
+}
+
+function removeUnlocksForRemovedReqs(reqs: string[]): void {
+  const settings = readSettings();
+  const saved = settings.unlockedFinalizedReqs;
+  const kept = saved && Object.fromEntries(Object.entries(saved).filter(([req]) => reqs.includes(req)));
+  if (kept && Object.keys(kept).length !== Object.keys(saved).length) {
+    writeSettings({ ...settings, unlockedFinalizedReqs: kept });
+  }
+}
+
 function readSettings(): MonitorSettings {
   if (!fs.existsSync(SETTINGS_FILE)) return {};
   const value = JSON.parse(fs.readFileSync(SETTINGS_FILE, "utf8")) as unknown;
   if (!value || typeof value !== "object" || Array.isArray(value)) {
     throw new Error(`Configuración inválida en ${SETTINGS_FILE}`);
   }
-  return value as MonitorSettings;
+  const settings = value as MonitorSettings;
+  if (settings.intervalMinutes !== undefined) validateIntervalMinutes(settings.intervalMinutes);
+  if (settings.unlockedFinalizedReqs !== undefined &&
+    (!settings.unlockedFinalizedReqs || typeof settings.unlockedFinalizedReqs !== "object" ||
+      Array.isArray(settings.unlockedFinalizedReqs) || Object.entries(settings.unlockedFinalizedReqs).some(([req, checkedAt]) =>
+        !REQ_PATTERN.test(req) || req !== req.toUpperCase() || !isValidReviewTime(checkedAt)))) {
+    throw new Error("unlockedFinalizedReqs inválido en configuración");
+  }
+  return settings;
+}
+
+function validateIntervalMinutes(value: unknown): number {
+  if (typeof value !== "number" || !Number.isInteger(value) || value < 0 || value > 1440) {
+    throw new Error("intervalMinutes debe ser un número entero entre 0 y 1440");
+  }
+  return value;
 }
 
 function validateTeamsWebhook(value: unknown): string {
@@ -216,27 +276,52 @@ function validateTeamsWebhook(value: unknown): string {
 
 function loadRuntimeSettings(): void {
   const settings = readSettings();
+  if (settings.allowOutsideHoursRuns !== undefined && typeof settings.allowOutsideHoursRuns !== "boolean") {
+    throw new Error("allowOutsideHoursRuns debe ser booleano");
+  }
+  allowOutsideHoursRuns = settings.allowOutsideHoursRuns === true;
+  intervalMinutes = settings.intervalMinutes ?? validateIntervalMinutes(INTERVAL_MINUTES);
   if (settings.teamsWebhookUrl !== undefined) {
     process.env.TEAMS_WEBHOOK_URL = validateTeamsWebhook(settings.teamsWebhookUrl);
   }
 }
 
-function saveTeamsWebhook(value: unknown): void {
-  const teamsWebhookUrl = validateTeamsWebhook(value);
+function writeSettings(settings: MonitorSettings): void {
   fs.mkdirSync(path.dirname(SETTINGS_FILE), { recursive: true });
   const temporary = `${SETTINGS_FILE}.tmp`;
-  fs.writeFileSync(temporary, `${JSON.stringify({ teamsWebhookUrl }, null, 2)}\n`, {
+  fs.writeFileSync(temporary, `${JSON.stringify(settings, null, 2)}\n`, {
     encoding: "utf8",
     mode: 0o600,
   });
   fs.renameSync(temporary, SETTINGS_FILE);
+}
+
+function saveTeamsWebhook(value: unknown): void {
+  const teamsWebhookUrl = validateTeamsWebhook(value);
+  writeSettings({ ...readSettings(), teamsWebhookUrl });
   process.env.TEAMS_WEBHOOK_URL = teamsWebhookUrl;
 }
 
+function saveOutsideHoursRuns(value: unknown): boolean {
+  if (typeof value !== "boolean") throw new Error("allowOutsideHoursRuns debe ser booleano");
+  writeSettings({ ...readSettings(), allowOutsideHoursRuns: value });
+  allowOutsideHoursRuns = value;
+  return value;
+}
+
+function saveIntervalMinutes(value: unknown): number {
+  const minutes = validateIntervalMinutes(value);
+  writeSettings({ ...readSettings(), intervalMinutes: minutes });
+  intervalMinutes = minutes;
+  scheduleNextMonitor();
+  return minutes;
+}
+
 function webhookStatus(): { configured: boolean; source: "runtime" | "environment" | "none" } {
+  const runtimeWebhook = readSettings().teamsWebhookUrl;
   return {
     configured: Boolean(process.env.TEAMS_WEBHOOK_URL),
-    source: fs.existsSync(SETTINGS_FILE)
+    source: runtimeWebhook
       ? "runtime"
       : process.env.TEAMS_WEBHOOK_URL
         ? "environment"
@@ -387,7 +472,7 @@ async function readBody(request: IncomingMessage): Promise<unknown> {
   }
 }
 
-function runMonitor(source = "manual"): boolean {
+function runMonitor(source = "manual", selectedReqs: string[] | null = null): boolean {
   if (child || activeTask) return false;
   fs.mkdirSync(path.dirname(LOG_FILE), { recursive: true });
   fs.writeFileSync(PROGRESS_FILE, "", { mode: 0o600 });
@@ -396,6 +481,7 @@ function runMonitor(source = "manual"): boolean {
   const tsxCli = path.resolve("node_modules/tsx/dist/cli.mjs");
 
   monitorStatus.running = true;
+  monitorStatus.selectedReqs = selectedReqs;
   monitorStatus.startedAt = new Date().toISOString();
   monitorStatus.finishedAt = null;
   monitorStatus.exitCode = null;
@@ -403,7 +489,7 @@ function runMonitor(source = "manual"): boolean {
   activeTask = "monitor";
   log.write(`\n[${monitorStatus.startedAt}] Inicio ${source}\n`);
 
-  child = spawn(process.execPath, [tsxCli, "monitor-req.ts"], {
+  child = spawn(process.execPath, [tsxCli, "monitor-req.ts", ...(selectedReqs?.flatMap((req) => ["--req", req]) ?? [])], {
     cwd: process.cwd(),
     env: { ...process.env, MONITOR_PROGRESS_FILE: PROGRESS_FILE },
     stdio: ["ignore", "pipe", "pipe"],
@@ -424,21 +510,38 @@ function runMonitor(source = "manual"): boolean {
 }
 
 function runScheduledMonitor(logSkipped = false): void {
-  const decision = scheduleDecision();
+  const decision = effectiveScheduleDecision();
   if (!decision.allowed) {
     if (logSkipped) console.log(`Ciclo inicial omitido: ${decision.reason}`);
     return;
   }
-  if (!runMonitor("programado")) {
+  let configured: string[];
+  let eligible: string[];
+  try {
+    configured = readReqs();
+    eligible = currentEligibleReqs(configured);
+  } catch {
+    console.error("Ciclo omitido: no se pudo verificar el bloqueo de REQ");
+    return;
+  }
+  if (!eligible.length) {
+    if (logSkipped) console.log("Ciclo omitido: no hay REQ desbloqueadas para monitorear");
+    return;
+  }
+  if (!runMonitor("programado", eligible.length === configured.length ? null : eligible)) {
     console.log("Ciclo omitido: monitor todavía ejecutándose");
   }
 }
 
 function scheduleNextMonitor(): void {
-  const intervalMs = INTERVAL_MINUTES * 60_000;
+  if (nextMonitorTimer) clearTimeout(nextMonitorTimer);
+  nextMonitorTimer = null;
+  if (intervalMinutes === 0) return;
+  const intervalMs = intervalMinutes * 60_000;
   const now = Date.now();
   const next = Math.floor(now / intervalMs + 1) * intervalMs;
-  setTimeout(() => {
+  nextMonitorTimer = setTimeout(() => {
+    nextMonitorTimer = null;
     runScheduledMonitor();
     scheduleNextMonitor();
   }, next - now);
@@ -534,10 +637,12 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   if (request.method === "GET" && url.pathname === "/api/dashboard") {
-    const schedule = scheduleDecision();
+    const schedule = effectiveScheduleDecision();
+    const reqs = readReqs();
     json(response, 200, {
-      reqs: readReqs(),
+      reqs,
       results: readResults(),
+      lockedReqs: currentLockedReqs(reqs),
       monitor: { ...monitorStatus, activeTask },
       progress: monitorStatus.startedAt
         ? { startedAt: monitorStatus.startedAt, items: readMonitorProgress(PROGRESS_FILE) }
@@ -545,9 +650,9 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       schedule: {
         ...schedule,
         timeZone: MONITOR_TIME_ZONE,
-        intervalMinutes: INTERVAL_MINUTES,
+        intervalMinutes,
       },
-      settings: { teamsWebhook: webhookStatus() },
+      settings: { teamsWebhook: webhookStatus(), allowOutsideHoursRuns, intervalMinutes },
       auth: localAuthStatus(AUTH_FILE),
     });
     return;
@@ -556,6 +661,16 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const body = await readBody(request) as { url?: unknown };
     saveTeamsWebhook(body.url);
     json(response, 200, { teamsWebhook: webhookStatus() });
+    return;
+  }
+  if (request.method === "PUT" && url.pathname === "/api/settings/outside-hours") {
+    const body = await readBody(request) as { allowOutsideHoursRuns?: unknown };
+    json(response, 200, { allowOutsideHoursRuns: saveOutsideHoursRuns(body.allowOutsideHoursRuns) });
+    return;
+  }
+  if (request.method === "PUT" && url.pathname === "/api/settings/interval") {
+    const body = await readBody(request) as { intervalMinutes?: unknown };
+    json(response, 200, { intervalMinutes: saveIntervalMinutes(body.intervalMinutes) });
     return;
   }
   if (request.method === "PUT" && url.pathname === "/api/reqs") {
@@ -567,6 +682,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const reqs = forceReplace || !wouldShrink
       ? requestedReqs
       : mergeReqLists(currentReqs, requestedReqs);
+    removeUnlocksForRemovedReqs(reqs);
     writeReqs(reqs);
     json(response, 200, {
       reqs,
@@ -583,21 +699,87 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     json(response, 201, { reqs });
     return;
   }
+  const lockRoute = url.pathname.match(/^\/api\/reqs\/([^/]+)\/lock$/);
+  if (request.method === "PUT" && lockRoute) {
+    if (child || activeTask) {
+      json(response, 409, { error: "Monitor ocupado; intenta nuevamente al finalizar" });
+      return;
+    }
+    const req = decodeURIComponent(lockRoute[1]).toUpperCase();
+    if (!REQ_PATTERN.test(req) || !readReqs().includes(req)) {
+      json(response, 404, { error: "REQ no monitoreada" });
+      return;
+    }
+    const body = await readBody(request) as { locked?: unknown } | null;
+    if (child || activeTask) {
+      json(response, 409, { error: "Monitor ocupado; intenta nuevamente al finalizar" });
+      return;
+    }
+    if (!body || typeof body !== "object" || Array.isArray(body) || typeof body.locked !== "boolean") {
+      json(response, 400, { error: "locked debe ser booleano" });
+      return;
+    }
+    const result = readLockResults().find((item) => item.req === req);
+    if (result?.status?.trim() !== "Finalizado") {
+      json(response, 409, { error: "El estado del portal no es Finalizado" });
+      return;
+    }
+    if (!body.locked && !isValidReviewTime(result.checkedAt)) {
+      json(response, 409, { error: "No se puede desbloquear una REQ sin fecha de revisión válida" });
+      return;
+    }
+    const settings = readSettings();
+    const unlocked = { ...settings.unlockedFinalizedReqs };
+    if (body.locked) delete unlocked[req];
+    else unlocked[req] = result.checkedAt!;
+    writeSettings({ ...settings, unlockedFinalizedReqs: unlocked });
+    json(response, 200, { req, locked: body.locked });
+    return;
+  }
   if (request.method === "DELETE" && url.pathname.startsWith("/api/reqs/")) {
     const req = decodeURIComponent(url.pathname.slice("/api/reqs/".length)).toUpperCase();
     if (!REQ_PATTERN.test(req)) throw new Error(`REQ inválida: ${req}`);
     const reqs = readReqs().filter((item) => item !== req);
+    removeUnlocksForRemovedReqs(reqs);
     writeReqs(reqs);
     json(response, 200, { reqs });
     return;
   }
   if (request.method === "POST" && url.pathname === "/api/monitor/run") {
-    const decision = scheduleDecision();
+    const decision = effectiveScheduleDecision();
     if (!decision.allowed) {
       json(response, 409, { error: scheduleError(decision) });
       return;
     }
-    const started = runMonitor("manual desde API");
+    const body = await readBody(request) as { reqs?: unknown } | null;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      json(response, 400, { error: "Solicitud de monitoreo inválida" });
+      return;
+    }
+    const selectedReqs = body.reqs === undefined ? null : validateReqs(body.reqs);
+    if (selectedReqs && selectedReqs.length === 0) {
+      json(response, 400, { error: "Selecciona al menos una REQ" });
+      return;
+    }
+    if (selectedReqs) {
+      const configured = new Set(readReqs());
+      if (selectedReqs.some((req) => !configured.has(req))) {
+        json(response, 400, { error: "La selección contiene REQ no monitoreadas" });
+        return;
+      }
+    }
+    const configuredReqs = readReqs();
+    const eligible = currentEligibleReqs(configuredReqs);
+    if (selectedReqs?.some((req) => !eligible.includes(req))) {
+      json(response, 409, { error: "La selección contiene REQ bloqueadas" });
+      return;
+    }
+    const requested = selectedReqs ?? eligible;
+    if (!requested.length) {
+      json(response, 409, { error: "No hay REQ desbloqueadas para monitorear" });
+      return;
+    }
+    const started = runMonitor("manual desde API", selectedReqs ?? (eligible.length === configuredReqs.length ? null : eligible));
     json(response, started ? 202 : 409, {
       started,
       ...(started ? {} : { error: "El monitor ya está ejecutándose" }),
@@ -646,23 +828,23 @@ async function main(): Promise<void> {
   if (!Number.isInteger(PORT) || PORT < 1 || PORT > 65_535) {
     throw new Error(`Puerto inválido: ${PORT}`);
   }
-  if (!Number.isFinite(INTERVAL_MINUTES) || INTERVAL_MINUTES < 0) {
+  if (!Number.isInteger(INTERVAL_MINUTES) || INTERVAL_MINUTES < 0 || INTERVAL_MINUTES > 1440) {
     throw new Error(`MONITOR_INTERVAL_MINUTES inválido: ${INTERVAL_MINUTES}`);
   }
 
   const server = http.createServer((request, response) => {
     handle(request, response).catch((error: unknown) => {
       const message = error instanceof Error ? error.message : String(error);
-      json(response, /inválida|arreglo|grande|JSON/i.test(message) ? 400 : 500, {
+      json(response, /inválida|arreglo|grande|JSON|intervalMinutes/i.test(message) ? 400 : 500, {
         error: message,
       });
     });
   });
   server.listen(PORT, HOST, () => {
     console.log(`Monitor API disponible en http://${HOST}:${PORT}`);
-    if (INTERVAL_MINUTES > 0) {
+    if (intervalMinutes > 0) {
       console.log(
-        `Monitor programado cada ${INTERVAL_MINUTES} minutos, lunes a viernes 08:00-12:00 y 14:00-18:00 (${MONITOR_TIME_ZONE}), excepto festivos de Colombia`,
+        `Monitor programado cada ${intervalMinutes} minutos, lunes a viernes 08:00-12:00 y 14:00-18:00 (${MONITOR_TIME_ZONE}), excepto festivos de Colombia`,
       );
       scheduleNextMonitor();
     }
@@ -670,6 +852,7 @@ async function main(): Promise<void> {
   });
 
   const shutdown = (): void => {
+    if (nextMonitorTimer) clearTimeout(nextMonitorTimer);
     child?.kill("SIGTERM");
     server.close(() => process.exit(0));
   };
