@@ -92,6 +92,24 @@ test("disabled or failed Operations alerts stay retryable without sending or adv
   assert.equal(delivered.lastNotified, now.toISOString());
 });
 
+test("queued Operations alert takes priority over a simultaneous morning reminder", async () => {
+  const now = new Date("2026-10-09T13:15:00Z");
+  const key = "Operations|9 oct 2026, 08:00|Before 09/10/2026";
+  const previous = { conversationStatus: "Pendiente de respuesta" as const, lastChecked: result.checkedAt,
+    lastNotified: "2026-10-08T13:15:00Z", latestOperationsCommentKey: key,
+    unnotifiedOperationsCommentKey: key,
+    lastReminder: { sourceKey: "operations-cycle-1", day: "2026-10-08" } };
+  const sent: string[] = [];
+  const next = await processReqResult(result, previous, now, false, async (message) => { sent.push(message); });
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /^Nuevo comentario de Operaciones: REQ123/);
+  assert.doesNotMatch(sent[0], /^Recordatorio:/);
+  assert.equal(next.unnotifiedOperationsCommentKey, undefined);
+  assert.equal(next.lastNotified, now.toISOString());
+  await processReqResult(result, next, now, false, async (message) => { sent.push(message); });
+  assert.equal(sent.length, 1);
+});
+
 test("Teams card separates readable facts from comments and uses answered status", () => {
   const payload = buildTeamsPayload(
     "REQ respondida por el solicitante: REQ123\nTítulo: Seguimiento\nProyecto: Portal\nEstado del portal: En curso\n\nComentario:\nEl solicitante confirmó la respuesta.\n\nAbrir REQ: https://portal.example/req123",

@@ -359,7 +359,7 @@ export async function processReqResult(
   const day = reminderDay(now);
   const deadline = result.activeDeadline;
   const awaitingDeadline = result.conversationStatus === PENDING_STATUS && deadline && day;
-  const reminder = !pendingAlert && !finalizedAlert && awaitingDeadline &&
+  const reminder = !pendingAlert && !finalizedAlert && !operationsAlert && awaitingDeadline &&
     (previous?.lastReminder?.sourceKey !== deadline.sourceKey || previous?.lastReminder?.day !== day);
   const next: ReqState = {
     conversationStatus: result.conversationStatus,
