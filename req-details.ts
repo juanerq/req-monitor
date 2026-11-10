@@ -153,6 +153,22 @@ function microservices(description: string | null): string[] {
   return [...names].slice(0, 50);
 }
 
+/** Repository/pipeline requests list code units as Nombre/Proyecto pairs. */
+export function repositoryRequestMicroservices(description: string | null, requestType: string | null): string[] {
+  const type = requestType?.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (type !== "creacion y configuracion de repositorios/pipelines" ||
+      !description || !/\brepositorios?\b/i.test(description)) return [];
+  const names = new Map<string, string>();
+  const lines = description.split("\n");
+  for (let index = 0; index < lines.length - 1; index += 1) {
+    const match = lines[index].match(/^\s*Nombre:\s*([\p{L}][\p{L}\p{N}_.-]{1,99})\s*$/iu);
+    if (!match || !/^\s*Proyecto:\s*\S(?:.*\S)?\s*$/iu.test(lines[index + 1])) continue;
+    names.set(match[1].toLowerCase(), names.get(match[1].toLowerCase()) ?? match[1]);
+    if (names.size === 50) break;
+  }
+  return [...names.values()];
+}
+
 function projectName(description: string | null): string | null {
   if (!description) return null;
   let observed: string | null = null;
@@ -189,12 +205,19 @@ export function parseReqDetails(input: {
     return null;
   };
   const description = get(["descripcion detallada de la solicitud", "detailed request description"], limits.long);
+  const requestType = get(["tipo de solicitud", "request type"]);
+  const explicitMicroservices = microservices(description);
+  const requestedFor = get(["peticion para", "requested for", "request for", "solicitante", "requester"]);
+  const headlineRequester = plain(input.headlineRequester ?? undefined, limits.short);
+  const requester = requestedFor?.includes("\n")
+    ? headlineRequester && requestedFor.split("\n").includes(headlineRequester) ? headlineRequester : null
+    : requestedFor ?? headlineRequester;
   return {
     status: get(["estado", "status"]),
     description,
     projectName: projectName(description),
     instructions: get(["instrucciones", "instructions"], limits.long),
-    requester: get(["peticion para", "requested for", "request for", "solicitante", "requester"]) ?? plain(input.headlineRequester ?? undefined, limits.short),
+    requester,
     requesterUserId: get(["id de usuario", "user id", "identificador de usuario"]),
     requesterEmail: get(["correo electronico", "email", "e-mail"]),
     requesterPhone: get(["telefono", "numero de telefono", "pedido para telefono", "numero de contacto", "phone", "phone number"]),
@@ -203,10 +226,10 @@ export function parseReqDetails(input: {
     requestDetails: {
       operationType: get(["tipo de operacion", "operation type"]),
       application: get(["aplicacion", "application"]),
-      requestType: get(["tipo de solicitud", "request type"]),
+      requestType,
       clientType: get(["tipo de cliente", "client type"]),
     },
-    microservices: microservices(description),
+    microservices: explicitMicroservices.length ? explicitMicroservices : repositoryRequestMicroservices(description, requestType),
     pullRequestUrls: [...new Set((input.descriptionLinks ?? []).filter((url) => {
       try {
         const parsed = new URL(url);

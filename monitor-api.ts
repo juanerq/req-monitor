@@ -9,6 +9,7 @@ import { authFilePath, loadAuthEnvironment, localAuthStatus, saveAuthSession, va
 import { monitorAuthErrorDetector } from "./monitor-auth.js";
 import { readMonitorProgress } from "./monitor-progress.js";
 import { eligibleReqs, isValidReviewTime, lockedFinalizedReqs } from "./finalized-req-lock.js";
+import { repositoryRequestMicroservices } from "./req-details.js";
 
 loadAuthEnvironment();
 
@@ -20,6 +21,7 @@ const LOG_FILE = path.join(ARTIFACTS_DIR, "monitor.log");
 const PROGRESS_FILE = path.join(ARTIFACTS_DIR, "monitor-progress.jsonl");
 const RESULTS_FILE = path.join(ARTIFACTS_DIR, "monitor-results.json");
 const WEB_DIR = path.resolve("web");
+const FRONTEND_BUNDLE_DIR = path.resolve("dist");
 const SETTINGS_FILE = path.resolve(
   process.env.MONITOR_SETTINGS_FILE ?? path.join(path.dirname(REQ_FILE), "settings.json"),
 );
@@ -149,8 +151,8 @@ function json(response: ServerResponse, status: number, body: unknown): void {
   response.end(`${JSON.stringify(body)}\n`);
 }
 
-function serveWeb(response: ServerResponse, file: string, contentType: string): void {
-  const filePath = path.join(WEB_DIR, file);
+function serveWeb(response: ServerResponse, file: string, contentType: string, directory = WEB_DIR): void {
+  const filePath = path.join(directory, file);
   if (!fs.existsSync(filePath)) {
     json(response, 404, { error: "Interfaz no encontrada" });
     return;
@@ -199,7 +201,19 @@ function readResults(): unknown[] {
   if (!fs.existsSync(RESULTS_FILE)) return [];
   try {
     const value = JSON.parse(fs.readFileSync(RESULTS_FILE, "utf8")) as unknown;
-    return Array.isArray(value) ? value : [];
+    if (!Array.isArray(value)) return [];
+    return value.map((item: unknown) => {
+      if (!item || typeof item !== "object") return item;
+      const result = item as Record<string, unknown>;
+      if (result.error || typeof result.description !== "string" ||
+          !Array.isArray(result.microservices) || result.microservices.length) return item;
+      const details = result.requestDetails;
+      const requestType = details && typeof details === "object" && !Array.isArray(details)
+        ? (details as Record<string, unknown>).requestType : null;
+      const names = repositoryRequestMicroservices(result.description,
+        typeof requestType === "string" ? requestType : null);
+      return names.length ? { ...result, microservices: names } : item;
+    });
   } catch {
     return [];
   }
@@ -604,7 +618,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     return;
   }
   if (request.method === "GET" && url.pathname === "/app.js") {
-    serveWeb(response, "app.js", "text/javascript; charset=utf-8");
+    serveWeb(response, "app.js", "text/javascript; charset=utf-8", FRONTEND_BUNDLE_DIR);
     return;
   }
   if (request.method === "GET" && url.pathname === "/ag-grid-community.min.js") {

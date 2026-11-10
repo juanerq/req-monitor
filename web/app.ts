@@ -1,12 +1,69 @@
-const state = {
-  dashboard: null, resultsByReq: new Map(),
+const document: any = globalThis.document;
+declare const agGrid: any;
+
+type StoredResult = {
+  req: string;
+  status?: string | null;
+  conversationStatus?: string | null;
+  latestOperationsComment?: { author: string; date: string | null; text: string } | null;
+  title?: string | null;
+  description?: string | null;
+  instructions?: string | null;
+  projectName?: string | null;
+  microservices?: string[] | null;
+  checkedAt?: string | null;
+  detailUrl?: string | null;
+  error?: string | null;
+  activeDeadline?: { dueAt?: string | null } | null;
+  requestDetails?: Record<string, string | null> | null;
+  requester?: string | null;
+  requesterUserId?: string | null;
+  requesterEmail?: string | null;
+  requesterPhone?: string | null;
+  sentAt?: string | null;
+  updatedAt?: string | null;
+};
+
+type DashboardPayload = {
+  reqs: string[];
+  results: StoredResult[];
+  lockedReqs?: string[];
+  monitor: {
+    running: boolean;
+    activeTask?: "monitor" | "query" | "auth" | null;
+    selectedReqs?: string[] | null;
+    startedAt?: string | null;
+    finishedAt?: string | null;
+    exitCode?: number | null;
+    authRequired?: boolean;
+  };
+  progress?: { startedAt: string | null; items?: Record<string, string> } | null;
+  schedule?: { allowed: boolean; reason?: string; intervalMinutes?: number } | null;
+  settings?: { allowOutsideHoursRuns?: boolean; intervalMinutes?: number };
+  auth?: { localSessionAvailable?: boolean; username?: string | null };
+};
+
+type DashboardState = {
+  dashboard: DashboardPayload | null;
+  resultsByReq: Map<string, StoredResult>;
+  accessPromptedRun: string | null;
+  alertedMonitorRun: string | null;
+  outsideHoursSaving: boolean;
+  runRequestPending: boolean;
+  queryPendingReq: string | null;
+};
+
+const state: DashboardState = {
+  dashboard: null, resultsByReq: new Map<string, StoredResult>(),
   accessPromptedRun: null, alertedMonitorRun: null,
   outsideHoursSaving: false,
   runRequestPending: false,
+  queryPendingReq: null,
 };
 let dashboardRequestSequence = 0;
-let progressPollTimer = null;
-let gridApi = null;
+let progressPollTimer: number | null = null;
+let toastTimeout: number | null = null;
+let gridApi: any = null;
 
 const elements = {
   list: document.querySelector("#req-grid"),
@@ -24,6 +81,7 @@ const elements = {
   detailsDialog: document.querySelector("#req-details-dialog"),
   detailsContent: document.querySelector("#req-details-content"),
   filterCount: document.querySelector("#filter-count"),
+  clearFilters: document.querySelector("#clear-filters-button"),
   liveProgress: document.querySelector("#live-progress"),
   credentialsButton: document.querySelector("#credentials-button"),
   credentialsDialog: document.querySelector("#credentials-dialog"),
@@ -60,6 +118,10 @@ const actionIcons = {
 
 function actionIcon(name) {
   return `<svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${actionIcons[name]}</svg>`;
+}
+
+function setLoading(button, loading) {
+  button?.setAttribute?.("aria-busy", String(loading));
 }
 
 function statusClass(status) {
@@ -119,8 +181,8 @@ function attachmentsWithDates(result, attachments) {
 function toast(message) {
   elements.toast.textContent = message;
   elements.toast.classList.add("visible");
-  window.clearTimeout(toast.timeout);
-  toast.timeout = window.setTimeout(() => elements.toast.classList.remove("visible"), 3500);
+  if (toastTimeout !== null) window.clearTimeout(toastTimeout);
+  toastTimeout = window.setTimeout(() => elements.toast.classList.remove("visible"), 3500);
 }
 
 async function copyReq(req) {
@@ -171,12 +233,17 @@ function webError(message) {
   return isAccessError(message) ? "Se necesita renovar el acceso a MiAsistencia360" : message;
 }
 
-async function api(url, options = {}) {
+function errorMessage(error: unknown): string {
+  return error && typeof error === "object" && "message" in error
+    ? String(error.message) : String(error);
+}
+
+async function api<T = unknown>(url: string, options: { method?: string; body?: string; headers?: Record<string, string> } = {}): Promise<T> {
   const headers = { ...(options.body ? { "Content-Type": "application/json" } : {}), ...options.headers };
   const response = await fetch(url, { ...options, headers });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || `HTTP ${response.status}`);
-  return body;
+  return body as T;
 }
 
 function updateSummary(reqs, results) {
@@ -218,7 +285,7 @@ function updateMonitor(monitor, schedule, progress, reqs) {
   document.querySelector("#status-dot").className = `status-dot ${busy ? "running" : scheduledAccess ? "ready" : "off"}`;
   elements.outsideHours.disabled = busy || state.outsideHoursSaving;
   updateRunSelection();
-  elements.queryForm.querySelector("button").disabled = busy;
+  elements.queryForm.querySelector("button").disabled = busy || Boolean(state.queryPendingReq);
 }
 
 function selectedReqs() {
@@ -239,6 +306,9 @@ function updateRunSelection() {
     state.dashboard?.reqs.length && !total ? "Todas las REQ están bloqueadas" : "Seleccioná REQ en la tabla";
   elements.run.disabled = !count || unavailable;
   elements.runAll.disabled = !gridApi || !total || unavailable;
+  const running = state.runRequestPending || state.dashboard?.monitor?.activeTask === "monitor" || state.dashboard?.monitor?.running === true;
+  setLoading(elements.run, running);
+  setLoading(elements.runAll, running);
 }
 
 async function runManualMonitor(reqs) {
@@ -250,13 +320,13 @@ async function runManualMonitor(reqs) {
     await api("/api/monitor/run", { method: "POST", body: JSON.stringify({ reqs }) });
     await loadDashboard();
     toast("Monitor iniciado");
-  } catch (error) { toast(error.message); }
+  } catch (error) { toast(errorMessage(error)); }
   finally { state.runRequestPending = false; updateRunSelection(); }
 }
 
 async function runAllReqs() {
   const total = eligibleDashboardReqs().length;
-  if (!gridApi || !total || state.runRequestPending || state.dashboard.monitor?.activeTask || state.dashboard.schedule?.allowed === false) return;
+  if (!gridApi || !total || state.runRequestPending || state.dashboard!.monitor?.activeTask || state.dashboard!.schedule?.allowed === false) return;
   gridApi.selectAll();
   const reqs = selectedReqs();
   if (reqs.length !== total) { toast("No se pudieron seleccionar todas las REQ disponibles"); return; }
@@ -291,8 +361,12 @@ const gridOptions = {
         if (!data) return "";
         return `<div class="req-identity"><span class="req-project">${escapeHtml(data.project)}</span>${data.microservices ? `<span class="req-service">${escapeHtml(data.microservices)}</span>` : ""}<div class="req-id-line"><button class="req-number req-copy" data-copy="${escapeHtml(data.req)}" type="button" aria-label="Copiar ${escapeHtml(data.req)}" title="Copiar número de REQ">${escapeHtml(data.req)}</button></div></div>`;
       } },
-    { headerName: "Estado del portal", field: "status", minWidth: 170, flex: 1,
-      cellRenderer: ({ data }) => data ? `<span class="badge portal-status ${portalStatusTone(data.result)}">${escapeHtml(data.status)}</span>` : "" },
+    { headerName: "Estado del portal", field: "status", minWidth: 195, flex: 1, autoHeight: true,
+      cellRenderer: ({ data }) => data ? `<div class="status-stack">
+        <span class="badge portal-status ${portalStatusTone(data.result)}">${escapeHtml(data.status)}</span>
+        <span class="conversation-status">Conversación: ${escapeHtml(data.conversationStatus)}</span>
+        ${data.operationsComment ? '<span class="operations-reply">Respuesta de Operaciones registrada</span>' : ""}
+      </div>` : "" },
     { headerName: "Detalle", field: "detail", minWidth: 250, flex: 2,
       cellRenderer: ({ data }) => data ? `<div class="req-title">${escapeHtml(data.detail)}</div>` : "" },
     { headerName: "Plazo y revisión", field: "checkedAt", minWidth: 310, flex: 1.4, autoHeight: true,
@@ -313,7 +387,7 @@ const gridOptions = {
           : `<a class="secondary icon-action" href="${url}" target="_blank" rel="noopener noreferrer" aria-label="Abrir ${escapeHtml(data.req)} en MiAsistencia360" title="Abrir en MiAsistencia360">${actionIcon("portal")}</a>`;
         return `<div class="row-actions">
           <button class="secondary icon-action" data-details="${escapeHtml(data.req)}" type="button" aria-label="Ver detalles de ${escapeHtml(data.req)}" title="Ver detalles">${actionIcon("details")}</button>
-          <button class="secondary icon-action" data-query="${escapeHtml(data.req)}" type="button" aria-label="Consultar ${escapeHtml(data.req)}" title="Consultar">${actionIcon("query")}</button>
+          <button class="secondary icon-action" data-query="${escapeHtml(data.req)}" type="button" aria-label="Consultar ${escapeHtml(data.req)}" title="Consultar" aria-busy="${state.queryPendingReq === data.req}" ${state.queryPendingReq === data.req ? "disabled" : ""}>${actionIcon("query")}</button>
           ${portal}
           ${data.result?.status?.trim() === "Finalizado" ? `<button class="secondary icon-action" data-lock="${escapeHtml(data.req)}" data-locked="${data.locked}" type="button" aria-label="${data.locked ? "Desbloquear" : "Bloquear"} ${escapeHtml(data.req)}" title="${data.locked ? "Desbloquear" : "Bloquear"} REQ" ${data.lockActionDisabled ? "disabled" : ""}>${actionIcon(data.locked ? "lock" : "unlock")}</button>` : ""}
           <button class="danger-button icon-action" data-delete="${escapeHtml(data.req)}" type="button" aria-label="Borrar ${escapeHtml(data.req)}" title="Borrar">${actionIcon("delete")}</button>
@@ -342,19 +416,51 @@ gridApi = typeof agGrid !== "undefined" && agGrid.createGrid
 
 function updateGridCount() {
   if (!gridApi || !state.dashboard) return;
-  const shown = gridApi.getDisplayedRowCount();
+  const visibleReqs: string[] = [];
+  const visibleResults: StoredResult[] = [];
+  gridApi.forEachNodeAfterFilter((node) => {
+    if (!node.data) return;
+    visibleReqs.push(node.data.req);
+    if (node.data.result) visibleResults.push(node.data.result);
+  });
+  const shown = visibleReqs.length;
+  updateSummary(visibleReqs, visibleResults);
   updateFilterCount(state.dashboard.reqs.length, shown);
   elements.empty.hidden = state.dashboard.reqs.length > 0 && shown > 0;
   elements.empty.textContent = state.dashboard.reqs.length ? "Sin coincidencias para los filtros aplicados." : "No hay REQ configuradas.";
 }
 
-function renderRows(reqs, results, progress = null, monitor = null) {
-  const byReq = new Map(results.map((result) => [result.req, result]));
+function clearTableFilters() {
+  if (!gridApi) return;
+  gridApi.setFilterModel(null);
+  gridApi.setGridOption("quickFilterText", "");
+}
+
+function inferredProject(result: StoredResult | null, configuredReqs: string[], byReq: Map<string, StoredResult>): string | null {
+  if (!result || result.projectName?.trim() || !Array.isArray(result.microservices)) return null;
+  const names = new Set(result.microservices.filter((name) => typeof name === "string")
+    .map((name) => name.trim().toLowerCase()).filter(Boolean));
+  if (!names.size) return null;
+  let project: string | null = null;
+  for (const req of configuredReqs) {
+    if (req === result.req) continue;
+    const donor = byReq.get(req);
+    if (donor?.error || !donor?.projectName?.trim() || !Array.isArray(donor.microservices) ||
+      !donor.microservices.some((name) => typeof name === "string" && names.has(name.trim().toLowerCase()))) continue;
+    const candidate = donor.projectName.trim();
+    if (project && project.toLowerCase() !== candidate.toLowerCase()) return null;
+    project = candidate;
+  }
+  return project;
+}
+
+function renderRows(reqs: string[], results: StoredResult[], progress: DashboardPayload["progress"] = null, monitor: DashboardPayload["monitor"] | null = null) {
+  const byReq = new Map<string, StoredResult>(results.map((result) => [result.req, result]));
   state.resultsByReq = byReq;
   const currentProgress = monitor?.running && progress?.startedAt === monitor.startedAt;
   const runReqs = monitor?.selectedReqs ?? reqs;
-  const activeReq = currentProgress ? runReqs.find((req) => progress.items?.[req] === "running") : null;
-  const analyzed = currentProgress ? runReqs.filter((req) => progress.items?.[req] === "success").length : 0;
+  const activeReq = currentProgress ? runReqs.find((req) => progress!.items?.[req] === "running") : null;
+  const analyzed = currentProgress ? runReqs.filter((req) => progress!.items?.[req] === "success").length : 0;
   elements.liveProgress.hidden = !currentProgress;
   const liveMessage = currentProgress
     ? `${activeReq ? `Monitoreando ahora: ${activeReq}` : "Preparando siguiente REQ"} · ${analyzed} de ${runReqs.length} revisadas`
@@ -368,6 +474,7 @@ function renderRows(reqs, results, progress = null, monitor = null) {
   }
   const rowData = [...reqs].reverse().map((req) => {
     const result = byReq.get(req) || null;
+    const inferred = inferredProject(result, reqs, byReq);
     const inRun = progress?.startedAt && progress.startedAt === monitor?.startedAt;
     const inScope = !monitor?.selectedReqs || monitor.selectedReqs.includes(req);
     const checked = inRun && inScope ? progress.items?.[req] : null;
@@ -375,10 +482,11 @@ function renderRows(reqs, results, progress = null, monitor = null) {
       req, result,
       locked: Boolean(state.dashboard?.lockedReqs?.includes(req)),
       lockActionDisabled: Boolean(state.dashboard?.monitor?.activeTask),
-      project: result?.projectName?.trim() || "Proyecto no disponible",
+      project: result?.projectName?.trim() || (inferred ? `${inferred} (inferido)` : "Proyecto no disponible"),
       microservices: Array.isArray(result?.microservices)
         ? result.microservices.filter(Boolean).join(", ").replace(/,\s*/g, ", ") : "",
-      status: portalStatusLabel(result), deadline: statedDeadline(result),
+      status: portalStatusLabel(result), conversationStatus: result?.conversationStatus || "Sin datos de conversación",
+      operationsComment: Boolean(result?.latestOperationsComment), deadline: statedDeadline(result),
       detail: webError(result?.error) || result?.title || "Información no disponible",
       checkedAt: result?.checkedAt || null,
       active: Boolean(monitor?.running && checked === "running"),
@@ -399,11 +507,12 @@ function available(value) {
 }
 
 function renderStoredDetails(result) {
+  const inferred = inferredProject(result, state.dashboard?.reqs ?? [], state.resultsByReq);
   const fields = [
     ["Estado del portal", result?.status],
     ["Estado de conversación (calculado)", result?.conversationStatus],
     ["Título", result?.title],
-    ["Proyecto", result?.projectName],
+    [inferred ? "Proyecto (inferido de otras REQ)" : "Proyecto", result?.projectName?.trim() || inferred],
     ["Microservicios detectados", result?.microservices?.length ? result.microservices.join(", ") : null],
     ["Tipo de operación", result?.requestDetails?.operationType],
     ["Aplicación", result?.requestDetails?.application],
@@ -435,7 +544,7 @@ function toggleDetails(button) {
   elements.detailsDialog.showModal();
 }
 
-function renderDashboard(data) {
+function renderDashboard(data: DashboardPayload) {
   state.dashboard = data;
   renderAuthStatus(data.auth);
   updateSummary(data.reqs, data.results);
@@ -454,7 +563,7 @@ function renderDashboard(data) {
     state.alertedMonitorRun = monitor.startedAt;
     const runReqs = monitor.selectedReqs ?? data.reqs;
     const total = runReqs.length;
-    const notReviewed = runReqs.filter((req) => data.progress.items?.[req] !== "success").length;
+    const notReviewed = runReqs.filter((req) => data.progress!.items?.[req] !== "success").length;
     if (total && notReviewed === total) toast("No se pudo revisar ninguna REQ en esta ejecución");
     else if (notReviewed) toast(`No se pudieron revisar ${notReviewed} de ${total} REQ`);
     else if (monitor.exitCode !== 0) toast("El monitoreo terminó con errores");
@@ -481,10 +590,10 @@ function renderAuthStatus(auth) {
 async function loadDashboard(silent = false) {
   const request = ++dashboardRequestSequence;
   try {
-    const data = await api("/api/dashboard");
+    const data = await api<DashboardPayload>("/api/dashboard");
     if (request === dashboardRequestSequence) renderDashboard(data);
   } catch (error) {
-    if (!silent && request === dashboardRequestSequence) toast(error.message);
+    if (!silent && request === dashboardRequestSequence) toast(errorMessage(error));
   }
 }
 
@@ -596,6 +705,7 @@ function renderQueryResult(result) {
 
 async function downloadAttachment(url, name, button) {
   button.disabled = true;
+  setLoading(button, true);
   const action = button.querySelector(".file-action");
   const originalText = action?.textContent;
   if (action) action.textContent = "Descargando...";
@@ -618,30 +728,45 @@ async function downloadAttachment(url, name, button) {
     window.setTimeout(() => URL.revokeObjectURL(blobUrl), 1_000);
     toast("Descarga iniciada");
   } catch (error) {
-    if (!handleAccessError(error.message)) toast(error.message);
+    if (!handleAccessError(errorMessage(error))) toast(errorMessage(error));
   } finally {
     button.disabled = false;
+    setLoading(button, false);
     if (action) action.textContent = originalText;
   }
 }
 
-async function queryReq(req) {
+async function queryReq(req, rowButton: any = null) {
+  if (state.queryPendingReq || state.dashboard?.monitor?.activeTask) return;
+  state.queryPendingReq = req;
   const button = elements.queryForm.querySelector("button");
   button.disabled = true;
+  setLoading(button, true);
+  if (rowButton) {
+    rowButton.disabled = true;
+    setLoading(rowButton, true);
+  }
   button.textContent = "Consultando...";
   try {
-    const data = await api("/api/reqs/query", { method: "POST", body: JSON.stringify({ req }) });
+    const data = await api<{ results: StoredResult[] }>("/api/reqs/query", { method: "POST", body: JSON.stringify({ req }) });
     if (!handleAccessError(data.results[0]?.error)) {
       renderQueryResult(data.results[0]);
       elements.queryResult.scrollIntoView?.({ behavior: "smooth", block: "start" });
       toast(data.results[0]?.error ? "No se pudo consultar la REQ" : "Consulta completada");
     }
   } catch (error) {
-    if (!handleAccessError(error.message)) toast(error.message);
+    if (!handleAccessError(errorMessage(error))) toast(errorMessage(error));
   } finally {
-    button.disabled = false;
+    state.queryPendingReq = null;
+    button.disabled = Boolean(state.dashboard?.monitor?.activeTask);
+    setLoading(button, false);
+    if (rowButton) {
+      rowButton.disabled = false;
+      setLoading(rowButton, false);
+    }
+    gridApi?.refreshCells?.({ force: true, columns: ["actions"] });
     button.textContent = "Consultar REQ";
-    loadDashboard(true);
+    await loadDashboard(true);
   }
 }
 
@@ -666,6 +791,7 @@ elements.credentialsForm.addEventListener("submit", async (event) => {
   const password = document.querySelector("#credentials-password");
   const submit = elements.credentialsForm.querySelector('button[type="submit"]');
   submit.disabled = true;
+  setLoading(submit, true);
   submit.textContent = "Renovando...";
   try {
     await api("/api/auth/renew", {
@@ -677,10 +803,11 @@ elements.credentialsForm.addEventListener("submit", async (event) => {
     toast("Sesión MiAsistencia360 renovada");
     await loadDashboard(true);
   } catch (error) {
-    toast(error.message);
+    toast(errorMessage(error));
   } finally {
     password.value = "";
     submit.disabled = false;
+    setLoading(submit, false);
     submit.textContent = "Renovar acceso";
   }
 });
@@ -690,12 +817,17 @@ elements.addForm.addEventListener("submit", async (event) => {
   const input = document.querySelector("#add-req");
   const reqs = parseReqList(input.value);
   if (!reqs.length) { toast("Ingresa al menos una REQ"); return; }
+  const button = elements.addForm.querySelector('button[type="submit"]');
+  if (button?.disabled) return;
+  button.disabled = true;
+  setLoading(button, true);
   try {
     await api("/api/reqs", { method: "POST", body: JSON.stringify({ reqs }) });
     input.value = "";
     await loadDashboard();
     toast(`${reqs.length} REQ agregadas al monitoreo`);
-  } catch (error) { toast(error.message); }
+  } catch (error) { toast(errorMessage(error)); }
+  finally { button.disabled = false; setLoading(button, false); }
 });
 
 elements.intervalForm?.addEventListener("submit", async (event) => {
@@ -707,14 +839,16 @@ elements.intervalForm?.addEventListener("submit", async (event) => {
   }
   const button = elements.intervalForm.querySelector('button[type="submit"]');
   button.disabled = true;
+  setLoading(button, true);
   try {
     await api("/api/settings/interval", { method: "PUT", body: JSON.stringify({ intervalMinutes: value }) });
     await loadDashboard(true);
     toast(value === 0 ? "Monitor automático pausado" : `Intervalo automático: ${value} minutos`);
   } catch (error) {
-    toast(error.message);
+    toast(errorMessage(error));
   } finally {
     button.disabled = false;
+    setLoading(button, false);
   }
 });
 
@@ -743,13 +877,14 @@ elements.list.addEventListener("click", async (event) => {
   const queryButton = event.target.closest("[data-query]");
   if (queryButton) {
     document.querySelector("#query-req").value = queryButton.dataset.query;
-    queryReq(queryButton.dataset.query);
+    queryReq(queryButton.dataset.query, queryButton);
     return;
   }
   const lockButton = event.target.closest("[data-lock]");
   if (lockButton) {
     if (state.runRequestPending || state.dashboard?.monitor?.activeTask) return;
     lockButton.disabled = true;
+    setLoading(lockButton, true);
     state.runRequestPending = true;
     updateRunSelection();
     try {
@@ -759,29 +894,34 @@ elements.list.addEventListener("click", async (event) => {
       });
       await loadDashboard();
       toast(locked ? "REQ bloqueada" : "REQ desbloqueada");
-    } catch (error) { toast(error.message); }
-    finally { state.runRequestPending = false; updateRunSelection(); lockButton.disabled = false; }
+    } catch (error) { toast(errorMessage(error)); }
+    finally { state.runRequestPending = false; updateRunSelection(); lockButton.disabled = false; setLoading(lockButton, false); }
     return;
   }
   const deleteButton = event.target.closest("[data-delete]");
   if (!deleteButton || !window.confirm(`¿Dejar de monitorear ${deleteButton.dataset.delete}?`)) return;
+  deleteButton.disabled = true;
+  setLoading(deleteButton, true);
   try {
     await api(`/api/reqs/${encodeURIComponent(deleteButton.dataset.delete)}`, { method: "DELETE" });
     await loadDashboard();
     toast("REQ eliminada del monitoreo");
-  } catch (error) { toast(error.message); }
+  } catch (error) { toast(errorMessage(error)); }
+  finally { deleteButton.disabled = false; setLoading(deleteButton, false); }
 });
 
 elements.run.addEventListener("click", () => runManualMonitor(selectedReqs()));
 elements.runAll.addEventListener("click", runAllReqs);
+elements.clearFilters.addEventListener("click", clearTableFilters);
 
 elements.outsideHours.addEventListener("click", async () => {
   if (state.outsideHoursSaving) return;
   const enabled = elements.outsideHours.getAttribute("aria-pressed") === "true";
   state.outsideHoursSaving = true;
   elements.outsideHours.disabled = true;
+  setLoading(elements.outsideHours, true);
   try {
-    const saved = await api("/api/settings/outside-hours", {
+    const saved = await api<{ allowOutsideHoursRuns: boolean }>("/api/settings/outside-hours", {
       method: "PUT", body: JSON.stringify({ allowOutsideHoursRuns: !enabled }),
     });
     elements.outsideHours.setAttribute("aria-pressed", String(saved.allowOutsideHoursRuns));
@@ -789,20 +929,27 @@ elements.outsideHours.addEventListener("click", async () => {
     await loadDashboard();
     toast(enabled ? "Monitor restringido a horario laboral" : "Monitor habilitado fuera de horario (manual y automático)");
   } catch (error) {
-    toast(error.message);
+    toast(errorMessage(error));
   } finally {
     state.outsideHoursSaving = false;
     elements.outsideHours.disabled = Boolean(state.dashboard?.monitor?.activeTask);
+    setLoading(elements.outsideHours, false);
   }
 });
 
-elements.refresh.addEventListener("click", () => loadDashboard());
+elements.refresh.addEventListener("click", async () => {
+  if (elements.refresh.getAttribute("aria-busy") === "true") return;
+  elements.refresh.disabled = true;
+  setLoading(elements.refresh, true);
+  try { await loadDashboard(); }
+  finally { elements.refresh.disabled = false; setLoading(elements.refresh, false); }
+});
 
 async function start() {
   try {
     await loadDashboard();
   } catch (error) {
-    toast(error.message);
+    toast(errorMessage(error));
   }
 }
 
@@ -810,3 +957,5 @@ start();
 window.setInterval(() => {
   if (!state.dashboard?.monitor?.running) loadDashboard(true);
 }, 15_000);
+
+export {};

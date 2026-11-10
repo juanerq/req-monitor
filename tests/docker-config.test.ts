@@ -10,6 +10,10 @@ test("Docker image copies imported deadline source before typecheck", () => {
     assert.ok(included.has(`!${source}`), `${source} must be in the image`);
   }
   assert.match(dockerfile, /RUN .*pnpm typecheck/);
+  assert.match(dockerfile, /RUN .*pnpm build/, "the frontend bundle must be built inside the image");
+  assert.equal(JSON.parse(fs.readFileSync("package.json", "utf8")).scripts.build, "vite build");
+  assert.match(JSON.parse(fs.readFileSync("package.json", "utf8")).scripts.typecheck, /tsc -p tsconfig\.web\.json/);
+  assert.match(fs.readFileSync("vite.config.mts", "utf8"), /entry: "web\/app\.ts"/);
 });
 
 test("Docker context contains image inputs but excludes credentials and HAR captures", () => {
@@ -21,10 +25,11 @@ test("Docker context contains image inputs but excludes credentials and HAR capt
   for (const source of copies.filter((source) => source !== ".")) {
     assert.ok(included.has(source), `Docker COPY input ${source} must be allowed`);
   }
-  for (const source of ["README.md", "tsconfig.json", "check-req.ts", "deadline.ts", "monitor-req.ts", "monitor-api.ts", "auth-session.ts", "req-details.ts", "web", "web/app.js", "web/index.html", "web/styles.css"]) {
+  for (const source of ["README.md", "tsconfig.json", "tsconfig.web.json", "vite.config.mts", "check-req.ts", "deadline.ts", "monitor-req.ts", "monitor-api.ts", "auth-session.ts", "req-details.ts", "web", "web/app.ts", "web/index.html", "web/styles.css"]) {
     assert.ok(included.has(source), `${source} must reach image`);
   }
   assert.ok(!included.has("web/**"), "new web files must not enter the image by default");
+  assert.ok(!included.has("web/app.js"), "unbuilt frontend source must not be served from Docker context");
   for (const secret of [".env", ".env.example", ".git", "playwright/.auth", "artifacts", "runtime", "capture.har"]) {
     assert.ok(!included.has(secret), `${secret} must stay outside Docker context`);
   }

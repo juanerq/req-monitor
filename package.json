@@ -7,7 +7,9 @@
     "monitor-req": "tsx monitor-req.ts",
     "monitor-api": "tsx monitor-api.ts",
     "auth": "tsx check-req.ts --login",
-    "typecheck": "tsc"
+    "typecheck": "tsc && tsc -p tsconfig.web.json",
+    "build": "vite build",
+    "test": "pnpm build && node --import tsx --test tests/*.test.ts"
   },
   "keywords": [],
   "author": "",
@@ -17,7 +19,8 @@
     "@types/node": "^26.1.2",
     "playwright": "^1.62.1",
     "tsx": "^4.23.5",
-    "typescript": "^7.0.2"
+    "typescript": "^7.0.2",
+    "vite": "8.3.5"
   },
   "dependencies": {
     "ag-grid-community": "35.0.0",

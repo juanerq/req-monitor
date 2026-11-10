@@ -9,7 +9,7 @@ RUN pnpm install --frozen-lockfile --prod=false
 
 COPY . ./
 COPY web ./web
-RUN mkdir -p playwright/.auth artifacts && pnpm typecheck
+RUN mkdir -p playwright/.auth artifacts && pnpm typecheck && pnpm build
 
 EXPOSE 8787
 

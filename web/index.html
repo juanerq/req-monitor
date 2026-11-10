@@ -65,7 +65,10 @@
 
         <div id="live-progress" class="live-progress" role="status" aria-live="polite" hidden></div>
         <div class="table-wrap">
-          <p id="filter-count" class="filter-count" aria-live="polite"></p>
+          <div class="table-filter-actions">
+            <p id="filter-count" class="filter-count" aria-live="polite"></p>
+            <button id="clear-filters-button" class="secondary" type="button">Limpiar filtros</button>
+          </div>
           <div id="req-grid" aria-label="Tabla de REQ monitoreadas"></div>
           <div id="empty-state" class="empty-state" hidden>No hay REQ configuradas.</div>
         </div>

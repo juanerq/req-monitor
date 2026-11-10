@@ -13,8 +13,10 @@
 !static-analysis-microservices.ts
 !finalized-req-lock.ts
 !tsconfig.json
+!tsconfig.web.json
+!vite.config.mts
 !web
-!web/app.js
+!web/app.ts
 !web/index.html
 !web/styles.css
 **/.env*

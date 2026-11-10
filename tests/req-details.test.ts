@@ -1,8 +1,16 @@
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { test } from "node:test";
-import { chromium } from "playwright";
-import { extractPortalFieldsFromDom, parseReqDetails } from "../req-details.ts";
+import { chromium, type Browser } from "playwright";
+import { conversationStatus, deriveCommentCycle } from "../deadline.ts";
+import { extractPortalFieldsFromDom, parseReqDetails, repositoryRequestMicroservices } from "../req-details.ts";
+
+async function portalPage(browser: Browser) {
+  const page = await browser.newPage();
+  // Match the browser setup used by check-req before evaluating the extracted function.
+  await page.evaluate("globalThis.__name = (target) => target");
+  return page;
+}
 
 test("check-req requests Spanish Colombia locale for portal labels", () => {
   const source = readFileSync(new URL("../check-req.ts", import.meta.url), "utf8");
@@ -12,7 +20,7 @@ test("check-req requests Spanish Colombia locale for portal labels", () => {
 test("DOM extraction ignores free-text labels before real detail fields", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     await page.setContent(`
       <section class="request-description">Estado: Finalizada<br>Petición para: Wrong Person</section>
       <dwp-event-details class="ng-star-inserted">
@@ -36,7 +44,7 @@ test("DOM extraction ignores free-text labels before real detail fields", async 
 test("DOM extraction fails closed when only prose and comments contain field labels", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     await page.setContent(`<article>Estado: Finalizada<br>Correo electrónico: fake@example.test</article>
       <aside><div><span>Estado</span><span>Finalizada</span></div></aside>
       <dwp-event-details><dl><dt>Estado</dt><dd>Finalizada</dd></dl>
@@ -53,7 +61,7 @@ test("DOM extraction fails closed when only prose and comments contain field lab
 test("DOM extraction preserves long detail values without silent clipping", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     const long = "s".repeat(20_000);
     await page.setContent(`<dwp-event-details>
       <div><span>Descripción Detallada de la Solicitud</span><div>${long}</div></div>
@@ -70,7 +78,7 @@ test("DOM extraction preserves long detail values without silent clipping", asyn
 test("DOM extraction reads project only from detailed description, not instructions or comments", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     await page.setContent(`<dwp-event-details><dl>
       <dt>Descripción Detallada de la Solicitud</dt><dd>Deployment notes<br>Proyecto: Sample Platform</dd>
       <dt>Instrucciones</dt><dd>Proyecto: Instruction Platform</dd>
@@ -86,7 +94,7 @@ test("DOM extraction reads project only from detailed description, not instructi
 test("observed portal definition list and status header yield only scoped fields", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     await page.setContent(`<dl><dt>Correo electrónico</dt><dd>outside@example.test</dd></dl>
       <dwp-event-details class="ng-star-inserted">
          <div data-ta="headlineItemWrapper"><p class="headline-item__title">Estado</p><p class="headline-item__description">En curso</p></div>
@@ -109,7 +117,7 @@ test("observed portal definition list and status header yield only scoped fields
 test("labeled Pending status survives a non-status media heading", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     await page.setContent(`<dwp-event-details>
       <div data-ta="headlineItemWrapper"><h3>Estado</h3><p class="headline-item__description">Pending</p></div>
       <p data-ta="coloredMediaHeaderParagraph_0">Request category descriptor</p>
@@ -131,7 +139,7 @@ test("labeled Pending status survives a non-status media heading", async () => {
 test("observed phone labels require structural event detail pairs", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     for (const label of ["Pedido para teléfono", "Numero de Contacto"]) {
       await page.setContent(`<article>${label}: +000 999999</article>
         <dwp-event-details><dl><dt>${label}</dt><dd>+000 123456</dd>
@@ -152,7 +160,7 @@ test("observed phone labels require structural event detail pairs", async () => 
 test("user ID requires explicit label and value beside requester headline", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     for (const label of ["ID de usuario", "User ID"]) {
       await page.setContent(`<section><div><span data-ta="headlineUserName">Casey Sample</span>
           <span>${label}</span><span>sample.user42</span></div></section>
@@ -167,10 +175,47 @@ test("user ID requires explicit label and value beside requester headline", asyn
   }
 });
 
+test("requester identity ignores a multiline requested-for card containing ID and email", () => {
+  const fields = [{ label: "Petición para", value: "C\nCasey Sample\nID de usuario: sample.user42\ncasey@example.test" }];
+  const details = parseReqDetails({ fields, headlineRequester: "Casey Sample" });
+  assert.equal(details.requester, "Casey Sample", "requester comments must not be attributed to Operations");
+  assert.equal(parseReqDetails({ fields }).requester, null, "ambiguous card without a verified name must not identify Operations");
+  assert.equal(parseReqDetails({ fields: [{ label: "Petición para", value: "Casey Sample" }],
+    headlineRequester: "Different Person" }).requester, "Casey Sample", "plain explicit requester still takes precedence");
+  const comment = (author: string, date: string) => ({ author, date, text: "Sample comment",
+    isResponse: author !== details.requester });
+  const requesterOnly = deriveCommentCycle([comment("Casey Sample", "6 nov 2026, 10:00")], false);
+  assert.equal(requesterOnly.latestOperationsComment, null);
+  assert.equal(conversationStatus(requesterOnly, false, false), "Sin comentario de operaciones");
+  const assigned = deriveCommentCycle([
+    comment("Casey Sample", "6 nov 2026, 10:00"), comment("Morgan Agent", "6 nov 2026, 11:00"),
+  ], false);
+  assert.equal(assigned.latestOperationsComment?.author, "Morgan Agent");
+  assert.equal(conversationStatus(assigned, false, false), "Pendiente de respuesta");
+});
+
+test("repository setup extracts microservice names only from paired Nombre and Proyecto fields", () => {
+  const description = "Configurar pipeline y release para los siguientes repositorios:\n" +
+    "Nombre: PaymentsApi\nProyecto: Platform\nURL: https://example.invalid/one\n" +
+    "Nombre: BillingWorker\nProyecto: Platform\nNombre: paymentsapi\nProyecto: Platform";
+  const fields = [
+    { label: "Tipo de solicitud", value: "Creación y configuración de repositorios/pipelines" },
+    { label: "Descripción Detallada de la Solicitud", value: description },
+  ];
+  assert.deepEqual(parseReqDetails({ fields }).microservices, ["PaymentsApi", "BillingWorker"]);
+  assert.deepEqual(parseReqDetails({ fields: [fields[0], { label: fields[1].label,
+    value: `${description}\nMicroservicio: ExplicitApi` }] }).microservices,
+    ["ExplicitApi"], "explicit microservice names retain precedence");
+  assert.deepEqual(repositoryRequestMicroservices("Nombre: Person\nProyecto: Platform", fields[0].value), [],
+    "a generic name without repository context is not a microservice");
+  assert.deepEqual(repositoryRequestMicroservices(description, "Consulta general"), []);
+  assert.deepEqual(repositoryRequestMicroservices("Repositorios:\nNombre: Person\nCorreo: sample@example.invalid", fields[0].value), []);
+});
+
 test("user ID remains absent without a compact labeled requester header", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     for (const header of [
       '<div><span data-ta="headlineUserName">Casey Sample 4242</span></div>',
       '<div><span data-ta="headlineUserName">Casey Sample</span><span>4242</span></div>',
@@ -193,7 +238,7 @@ test("user ID remains absent without a compact labeled requester header", async 
 test("English header fallback works without comments", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     await page.setContent(`<dwp-event-details><p data-ta="coloredMediaHeaderParagraph_0">In Progress</p>
       <dl><dt>Detailed Request Description</dt><dd>Nombre de microservicio. EnglishApi</dd></dl></dwp-event-details>`);
     const details = parseReqDetails(await page.evaluate(extractPortalFieldsFromDom));
@@ -207,7 +252,7 @@ test("English header fallback works without comments", async () => {
 test("status header can precede event details while field labels remain scoped", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
      await page.setContent(`<div data-ta="headlineItemWrapper"><p class="headline-item__title">Estado</p><p class="headline-item__description">En curso</p></div>
       <dl><dt>Correo electrónico</dt><dd>outside@example.test</dd></dl>
       <dwp-event-details><dl><dt>Descripción Detallada de la Solicitud</dt>
@@ -224,7 +269,7 @@ test("status header can precede event details while field labels remain scoped",
 test("missing, conflicting, and unknown status headers fail closed even with comments", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     for (const header of [
       "",
        '<div data-ta="headlineItemWrapper"><p class="headline-item__title">Estado</p><p class="headline-item__description">En curso</p></div><p data-ta="coloredMediaHeaderParagraph_0">Finalizada</p>',
@@ -245,7 +290,7 @@ test("missing, conflicting, and unknown status headers fail closed even with com
 test("labeled status survives unrelated headline descriptions", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     await page.setContent(`<div data-ta="headlineItemWrapper"><p class="headline-item__title">Solicitud</p>
         <p class="headline-item__description">Solicitud de cambio</p></div>
       <div data-ta="headlineItemWrapper"><p class="headline-item__title">Estado</p>
@@ -263,7 +308,7 @@ test("labeled status survives unrelated headline descriptions", async () => {
 test("unlabeled and conflicting status headline values fail closed", async () => {
   const browser = await chromium.launch();
   try {
-    const page = await browser.newPage();
+    const page = await portalPage(browser);
     for (const headers of [
       '<div data-ta="headlineItemWrapper"><p class="headline-item__title">Solicitud</p><p class="headline-item__description">En curso</p></div>',
       '<div data-ta="headlineItemWrapper"><p class="headline-item__title">Estado</p><p class="headline-item__description">En curso</p></div><div data-ta="headlineItemWrapper"><p class="headline-item__title">Status</p><p class="headline-item__description">Finalizada</p></div>',

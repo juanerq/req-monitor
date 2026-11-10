@@ -1,7 +1,12 @@
 import assert from "node:assert/strict";
 import fs from "node:fs";
+import { stripTypeScriptTypes } from "node:module";
 import vm from "node:vm";
 import { test } from "node:test";
+
+function frontendSource(): string {
+  return stripTypeScriptTypes(fs.readFileSync("web/app.ts", "utf8"));
+}
 
 function mockGrid(list: { innerHTML: string }) {
   let options: { columnDefs: { field?: string; cellRenderer?: (params: { data: any }) => string }[]; rowSelection?: { isRowSelectable?: (node: { data: any }) => boolean }; onModelUpdated?: () => void; onSelectionChanged?: () => void };
@@ -28,6 +33,9 @@ function mockGrid(list: { innerHTML: string }) {
       if (name === "rowData") options.onSelectionChanged?.();
     },
     setColumnFilterModel: async (_column: string, model: { filter: string } | null) => { status = model?.filter ?? "all"; },
+    setFilterModel: (model: { status?: { filter: string } } | null) => { status = model?.status?.filter ?? "all"; redraw(); },
+    getFilterModel: () => status === "all" ? {} : { status: { filter: status } },
+    forEachNodeAfterFilter: (callback: (node: { data: any }) => void) => displayed().forEach((data) => callback({ data })),
     onFilterChanged: redraw,
     getDisplayedRowCount: () => displayed().length,
     getSelectedRows: () => rows.filter((row) => selected.has(row.req)),
@@ -41,7 +49,8 @@ function mockGrid(list: { innerHTML: string }) {
 }
 
 test("add-monitor form submits pasted REQs together and preserves the single-REQ path", async () => {
-  const source = fs.readFileSync("web/app.js", "utf8");
+  const source = frontendSource();
+  const loading = source.slice(source.indexOf("function setLoading("), source.indexOf("function statusClass("));
   const helpers = source.slice(source.indexOf("function normalizeReq("), source.indexOf("function fileType("));
   const handler = source.slice(source.indexOf('elements.addForm.addEventListener("submit"'), source.indexOf('elements.queryForm.addEventListener("submit"'));
   const input = { value: "REQ101, req102\nREQ101; REQ103" };
@@ -50,23 +59,40 @@ test("add-monitor form submits pasted REQs together and preserves the single-REQ
   const messages: string[] = [];
   let onSubmit: (event: { preventDefault: () => void }) => Promise<void> = async () => {};
   let refreshes = 0;
-  const elements = { addForm: { addEventListener: (_name: string, listener: typeof onSubmit) => { onSubmit = listener; } } };
+  let releaseRequest: (() => void) | undefined;
+  let holdRequest = false;
+  const button = { disabled: false, busy: "false", setAttribute(_name: string, value: string) { this.busy = value; } };
+  const elements = { addForm: { querySelector: () => button,
+    addEventListener: (_name: string, listener: typeof onSubmit) => { onSubmit = listener; } } };
   const context = vm.createContext({ elements, document: { querySelector: () => input },
-    api: async (url: string, options: { method: string; body: string }) => { urls.push(url); calls.push(options); },
+    api: async (url: string, options: { method: string; body: string }) => {
+      urls.push(url); calls.push(options);
+      if (holdRequest) await new Promise<void>((resolve) => { releaseRequest = resolve; });
+    },
     loadDashboard: async () => { refreshes++; }, toast: (message: string) => messages.push(message) });
-  vm.runInContext(`${helpers}\n${handler}`, context);
+  vm.runInContext(`${loading}\n${helpers}\n${handler}`, context);
   await onSubmit({ preventDefault() {} });
   assert.deepEqual(JSON.parse(calls[0].body), { reqs: ["REQ101", "REQ102", "REQ103"] });
   assert.equal(calls[0].method, "POST");
   assert.equal(urls[0], "/api/reqs");
   assert.equal(input.value, "");
   assert.equal(refreshes, 1);
+  assert.equal(button.disabled, false);
+  assert.equal(button.busy, "false");
   assert.match(messages[0], /3 REQ/);
 
   input.value = "req104";
+  holdRequest = true;
+  const pending = onSubmit({ preventDefault() {} });
+  assert.equal(button.disabled, true);
+  assert.equal(button.busy, "true");
   await onSubmit({ preventDefault() {} });
+  assert.equal(calls.length, 2, "busy submit must not start a duplicate request");
+  releaseRequest?.();
+  await pending;
   assert.deepEqual(JSON.parse(calls[1].body), { reqs: ["REQ104"] });
   assert.equal(refreshes, 2);
+  assert.equal(button.busy, "false");
 
   input.value = " , ; \n ";
   await onSubmit({ preventDefault() {} });
@@ -86,7 +112,7 @@ test("REQ table uses AG Grid Community for sorting, column filtering and paginat
   } };
   const document = { querySelector: (selector: string) => selector === "#req-grid" ? grid : ({}) };
   const context = vm.createContext({ document, URL, console, agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(script, context);
   assert.ok(options);
   assert.equal(options.pagination, true);
@@ -118,6 +144,7 @@ test("dashboard refresh repaints changed microservice names when the REQ column 
       list.innerHTML = options.columnDefs[0].cellRenderer!({ data: row });
     },
     getSelectedRows: () => [], getDisplayedRowCount: () => 1,
+    forEachNodeAfterFilter: (callback: (node: { data: any }) => void) => callback({ data: row }),
   };
   const document = { querySelector: (selector: string) => ({
     "#req-grid": list, "#empty-state": empty, "#live-progress": live,
@@ -125,7 +152,7 @@ test("dashboard refresh repaints changed microservice names when the REQ column 
   } as Record<string, object>)[selector] ?? {} };
   const context = vm.createContext({ document, URL, console,
     agGrid: { themeQuartz: { withParams: () => ({}) }, createGrid: (_el: unknown, config: typeof options) => { options = config; return gridApi; } } });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;
     state.dashboard = { reqs: ["REQ101"], monitor: { activeTask: null }, schedule: { allowed: true } };`, context);
   const render = (names: string[]) => (context as { renderRowsForTest: (reqs: string[], results: object[]) => void })
@@ -146,7 +173,7 @@ test("dashboard remains usable when the AG Grid asset cannot load", () => {
     return fields.get(selector);
   } };
   const context = vm.createContext({ document, URL, console });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.updateSummaryForTest = updateSummary;`, context);
   const ui = context as { renderRowsForTest: (reqs: string[], results: object[]) => void; updateSummaryForTest: (reqs: string[], results: object[]) => void };
   ui.updateSummaryForTest(["REQ123"], [{ req: "REQ123", conversationStatus: "Respondida" }]);
@@ -158,13 +185,13 @@ test("dashboard remains usable when the AG Grid asset cannot load", () => {
 });
 
 test("monitored table labels the stated deadline without claiming verified closure", () => {
-  const source = fs.readFileSync("web/app.js", "utf8");
-  assert.match(source, /headerName: "Plazo indicado"/);
+  const source = frontendSource();
+  assert.match(source, /headerName: "Plazo y revisión"/);
   const list = { innerHTML: "" };
   const empty = { hidden: false };
   const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : selector === "#empty-state" ? empty : {} };
   const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;`, context);
   const render = (result: object) => {
     (context as { renderRowsForTest: (reqs: string[], results: object[]) => void }).renderRowsForTest(["REQ123"], [{ req: "REQ123", ...result }]);
@@ -187,7 +214,7 @@ test("Acceso displays only an unverified username label and local session availa
     return fields.get(selector);
   } };
   const context = vm.createContext({ document, URL, console, agGrid: mockGrid({ innerHTML: "" }).agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderAuthStatusForTest = renderAuthStatus;`, context);
   const render = (context as { renderAuthStatusForTest: (auth: object) => void }).renderAuthStatusForTest;
   render({ username: "<unverified>", localSessionAvailable: true, password: "synthetic-secret" });
@@ -218,7 +245,7 @@ test("manual REQ query opens Acceso for authentication errors without showing CL
   const fetch = async () => ({ ok: answer.ok, status: answer.ok ? 200 : 500,
     json: async () => answer.error ? { error: answer.error } : { results: answer.results } });
   const context = vm.createContext({ document, URL, console, fetch, agGrid: mockGrid({ innerHTML: "" }).agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.queryReqForTest = queryReq; toast = (message) => messages.push(message); loadDashboard = async () => {};`,
     Object.assign(context, { messages }));
   const query = () => (context as { queryReqForTest: (req: string) => Promise<void> }).queryReqForTest("REQ123");
@@ -264,12 +291,12 @@ test("manual REQ query opens Acceso for authentication errors without showing CL
 test("completed monitor authentication failure opens Acceso once per run", () => {
   const dialog = { open: false, shows: 0, showModal() { this.open = true; this.shows++; } };
   const document = { querySelector: (selector: string) => selector === "#credentials-dialog" ? dialog :
-    selector === "#credentials-username" ? { focus() {} } : {} };
+    selector === "#credentials-username" ? { focus() {} } : { setAttribute() {} } };
   const messages: string[] = [];
   const context = vm.createContext({ document, URL, console, messages, agGrid: mockGrid({ innerHTML: "" }).agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderDashboardForTest = renderDashboard;
-    renderAuthStatus = () => {}; updateSummary = () => {}; updateMonitor = () => {}; renderRows = () => {};
+    renderAuthStatus = () => {}; updateSummary = () => {}; updateMonitor = () => {}; renderRows = () => {}; updateProgressPolling = () => {};
     toast = (message) => messages.push(message);`, context);
   const render = (monitor: object) => (context as { renderDashboardForTest: (data: object) => void })
     .renderDashboardForTest({ reqs: [], results: [], monitor, auth: {} });
@@ -295,7 +322,7 @@ test("per-REQ monitor progress distinguishes running, successful, failed and unv
   const document = { querySelector: (selector: string) => selector === "#req-grid" ? list :
     selector === "#empty-state" ? empty : selector === "#live-progress" ? live : {} };
   const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.activeRowForTest = gridOptions.rowClassRules["req-active"];`, context);
   const render = (items: object, running: boolean, selectedReqs: string[] | null = null) => (context as {
     renderRowsForTest: (reqs: string[], results: object[], progress: object, monitor: object) => void;
@@ -336,7 +363,7 @@ test("manual selection starts empty, survives refresh and never selects unconfig
     selector === "#empty-state" ? empty : selector === "#run-button" ? run :
       selector === "#selection-count" ? count : {} };
   const context = vm.createContext({ document, URL, console, agGrid: grid.agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;
     this.setDashboardForTest = (reqs) => { state.dashboard = { reqs, monitor: { activeTask: null }, schedule: { allowed: true } }; };
     this.selectedReqsForTest = selectedReqs; this.selectionConfigForTest = gridOptions.rowSelection;`, context);
@@ -372,7 +399,7 @@ test("header checkbox selects all eligible REQs across filters and pagination", 
     selector === "#empty-state" ? empty : selector === "#run-button" ? run :
       selector === "#selection-count" ? count : {} };
   const context = vm.createContext({ document, URL, console, agGrid: grid.agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;
     this.setDashboardForTest = (reqs) => { state.dashboard = { reqs, monitor: { activeTask: null }, schedule: { allowed: true } }; };
     this.selectedForTest = selectedReqs; this.gridOptionsForTest = gridOptions;`, context);
@@ -410,7 +437,7 @@ test("latest-review sort puts newly added unreviewed REQs first", () => {
       selector === "#selection-count" ? { textContent: "" } :
       selector === "#run-button" || selector === "#run-all-button" ? { disabled: false } : {} };
   const context = vm.createContext({ document, URL, console, agGrid: grid.agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;
     this.setDashboardForTest = (reqs) => { state.dashboard = { reqs, monitor: { activeTask: null }, schedule: { allowed: true } }; };
     this.reviewColumnForTest = gridOptions.columnDefs.find((column) => column.field === "checkedAt");`, context);
@@ -439,7 +466,7 @@ test("run-all selects every configured REQ and sends one manual batch without st
     selector === "#empty-state" ? empty : selector === "#run-button" ? run :
       selector === "#run-all-button" ? runAll : selector === "#selection-count" ? count : {} };
   const context = vm.createContext({ document, URL, console, agGrid: grid.agGrid, requests });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;
     this.setDashboardForTest = (reqs, allowed = true, activeTask = null, lockedReqs = []) => {
       state.dashboard = { reqs, lockedReqs, monitor: { activeTask }, schedule: { allowed } }; updateRunSelection();
@@ -485,11 +512,11 @@ test("run-all selects every configured REQ and sends one manual batch without st
 
 test("dashboard alerts once for partial or total scan failures and not for clean runs", () => {
   const messages: string[] = [];
-  const document = { querySelector: () => ({}) };
+  const document = { querySelector: () => ({ setAttribute() {} }) };
   const context = vm.createContext({ document, URL, console, messages, agGrid: mockGrid({ innerHTML: "" }).agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderDashboardForTest = renderDashboard;
-    renderAuthStatus = () => {}; updateSummary = () => {}; updateMonitor = () => {}; renderRows = () => {};
+    renderAuthStatus = () => {}; updateSummary = () => {}; updateMonitor = () => {}; renderRows = () => {}; updateProgressPolling = () => {};
     toast = (message) => messages.push(message);`, context);
   const render = (startedAt: string, items: object, running: boolean, exitCode: number, selectedReqs: string[] | null = null) =>
     (context as { renderDashboardForTest: (data: object) => void }).renderDashboardForTest({
@@ -519,7 +546,7 @@ test("late dashboard response cannot replace newer monitor progress", async () =
   const document = { querySelector: () => ({}) };
   const fetch = () => new Promise((resolve) => pending.push(resolve));
   const context = vm.createContext({ document, URL, console, fetch, rendered, agGrid: mockGrid({ innerHTML: "" }).agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}
     renderDashboard = (data) => rendered.push(data.monitor.startedAt);
     this.loadDashboardForTest = loadDashboard;`, context);
@@ -546,7 +573,7 @@ function dashboardHarness() {
   const query = { innerHTML: "", hidden: true, scrollIntoView() {} };
   const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : selector === "#empty-state" ? empty : selector === "#query-result" ? query : selector === "#req-details-dialog" ? dialog : selector === "#req-details-content" ? panel : {} };
   const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails; this.renderQueryResultForTest = renderQueryResult;`, context);
   const render = (result: object) => {
     dialog.close();
@@ -562,7 +589,7 @@ function dashboardHarness() {
 
 test("portal status is literal, independent of conversation status and unavailable when absent", () => {
   const ui = dashboardHarness();
-  assert.match(ui.html, /Estado del portal/);
+  assert.match(frontendSource(), /headerName: "Estado del portal"/);
   ui.render({ status: "Asignado por mesa", conversationStatus: "Pendiente de respuesta", microservices: ["servicio-a"], title: "Resumen" });
   assert.match(ui.list.innerHTML, /Asignado por mesa/);
   assert.doesNotMatch(ui.list.innerHTML, /<span class="badge[^>]*>Pendiente de respuesta/);
@@ -570,6 +597,19 @@ test("portal status is literal, independent of conversation status and unavailab
   ui.render({ conversationStatus: "Finalizada", status: null, microservices: [] });
   assert.match(ui.list.innerHTML, /Estado no disponible/);
   assert.doesNotMatch(ui.list.innerHTML, /Sin microservicio/);
+});
+
+test("table exposes conversation state and Operations reply without replacing the portal status", () => {
+  const ui = dashboardHarness();
+  ui.render({ status: "Pendiente", conversationStatus: "Respondida", latestOperationsComment: {
+    author: "Operations", date: null, text: "Please review", attachments: [],
+  } });
+  assert.match(ui.list.innerHTML, /class="badge portal-status warning"[^>]*>Pendiente<\/span>/);
+  assert.match(ui.list.innerHTML, /Conversación: Respondida/);
+  assert.match(ui.list.innerHTML, /Respuesta de Operaciones registrada/);
+  ui.render({ status: "Asignada", conversationStatus: "<script>", latestOperationsComment: null });
+  assert.match(ui.list.innerHTML, /Conversación: &lt;script&gt;/);
+  assert.doesNotMatch(ui.list.innerHTML, /Respuesta de Operaciones registrada/);
 });
 
 test("portal status badges retain literal text with distinct, safe color classes", () => {
@@ -630,7 +670,7 @@ test("details open in a separate dialog without compressing the grid cell", () =
 test("missing values stay unavailable and stored text and links cannot inject markup", () => {
   const ui = dashboardHarness();
   ui.render({ status: "<img src=x onerror=alert(1)>", title: "<svg onload=alert(1)>", detailUrl: "javascript:alert(1)", description: "<script>alert(1)</script>", requesterEmail: '" onfocus="alert(1)' });
-  assert.doesNotMatch(ui.list.innerHTML, /<img|<svg|href="javascript:/);
+  assert.doesNotMatch(ui.list.innerHTML, /<img|<svg[^>]*onload|href="javascript:/);
   assert.match(ui.list.innerHTML, /&lt;img/);
   ui.toggle();
   assert.match(ui.cell.innerHTML, /&lt;script&gt;/);
@@ -640,7 +680,7 @@ test("missing values stay unavailable and stored text and links cannot inject ma
 
 test("observed project appears beside microservice and REQ and in accessible stored details", () => {
   const ui = dashboardHarness();
-  assert.match(fs.readFileSync("web/app.js", "utf8"), /headerName: "Proyecto \/ Microservicio \/ REQ"/);
+  assert.match(frontendSource(), /headerName: "Proyecto \/ Microservicio \/ REQ"/);
   ui.render({ projectName: "Proyecto Sintético", microservices: ["servicio-demo"] });
   assert.match(ui.list.innerHTML, /Proyecto Sintético/);
   assert.match(ui.list.innerHTML, /servicio-demo/);
@@ -704,17 +744,19 @@ function filterHarness() {
       return stub(selector);
     },
   };
-  const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
-  const script = fs.readFileSync("web/app.js", "utf8").split('elements.credentialsButton.addEventListener')[0];
+  const grid = mockGrid(list);
+  const context = vm.createContext({ document, URL, console, agGrid: grid.agGrid });
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(
-    `${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails; this.updateSummaryForTest = updateSummary; this.setFiltersForTest = (text, status) => { state.filters.text = text; state.filters.status = status; gridApi.setGridOption('quickFilterText', text); gridApi.setColumnFilterModel('status', status === 'all' ? null : { filter: status }); gridApi.onFilterChanged(); }; this.getFiltersForTest = () => ({ ...state.filters }); this.setDashboardForTest = (reqs) => { state.dashboard = { reqs }; };`,
+    `${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails; this.setFiltersForTest = (text, status) => { this.testFilters = { text, status }; gridApi.setGridOption('quickFilterText', text); gridApi.setFilterModel(status === 'all' ? null : { status: { filter: status } }); }; this.getFiltersForTest = () => this.testFilters; this.clearTableFiltersForTest = clearTableFilters; this.selectedReqsForTest = selectedReqs; this.setDashboardForTest = (reqs) => { state.dashboard = { reqs }; };`,
     context,
   );
   const typed = context as unknown as {
     renderRowsForTest: (reqs: string[], results: object[]) => void;
     toggleDetailsForTest: (button: object) => void;
-    updateSummaryForTest: (reqs: string[], results: object[]) => void;
     setFiltersForTest: (text: string, status: string) => void;
+    clearTableFiltersForTest: () => void;
+    selectedReqsForTest: () => string[];
     getFiltersForTest: () => { text: string; status: string };
     setDashboardForTest: (reqs: string[]) => void;
   };
@@ -724,7 +766,7 @@ function filterHarness() {
     { req: "REQ300", status: null, projectName: null, microservices: [] },
   ];
   const renderAll = () => { typed.setDashboardForTest(["REQ100", "REQ200", "REQ300"]); typed.renderRowsForTest(["REQ100", "REQ200", "REQ300"], rows()); };
-  return { fields, list, panel, dialog, cell: panel, detailsButton, typed, renderAll, stub };
+  return { fields, list, panel, dialog, cell: panel, detailsButton, typed, renderAll, stub, grid };
 }
 
 test("text filter matches REQ number, observed project and microservice without portal queries", () => {
@@ -744,6 +786,34 @@ test("text filter matches REQ number, observed project and microservice without 
   assert.doesNotMatch(ui.list.innerHTML, /REQ100/);
 });
 
+test("missing project is inferred only from unambiguous shared microservices in configured REQs", () => {
+  const ui = filterHarness();
+  const reqs = ["REQ100", "REQ200", "REQ300", "REQ400"];
+  const target = { req: "REQ300", projectName: null, microservices: [" SharedApi "] };
+  const donor = { req: "REQ100", projectName: "Project Alpha", microservices: ["sharedapi"] };
+  const other = { req: "REQ200", projectName: "Project Beta", microservices: ["OtherApi"] };
+  const show = (results: object[]) => {
+    ui.typed.setDashboardForTest(reqs);
+    ui.typed.renderRowsForTest(reqs, results);
+    ui.typed.toggleDetailsForTest({ dataset: { details: "REQ300" } });
+  };
+  show([donor, other, target]);
+  assert.match(ui.list.innerHTML, /Project Alpha/);
+  assert.match(ui.panel.innerHTML, /Proyecto \(inferido de otras REQ\)<\/dt><dd>Project Alpha<\/dd>/);
+  assert.equal(target.projectName, null, "inference must not overwrite the portal result");
+
+  show([donor, other, { ...target, microservices: ["SharedApi", "OtherApi"] }]);
+  assert.match(ui.panel.innerHTML, /<dt>Proyecto<\/dt><dd>No disponible<\/dd>/,
+    "conflicting projects must not be guessed");
+  show([donor, other, { ...target, microservices: ["UnknownApi"] }]);
+  assert.match(ui.panel.innerHTML, /<dt>Proyecto<\/dt><dd>No disponible<\/dd>/);
+  show([donor, other, { ...target, projectName: "Explicit Project" }]);
+  assert.match(ui.panel.innerHTML, /<dt>Proyecto<\/dt><dd>Explicit Project<\/dd>/);
+  show([{ req: "REQ999", projectName: "Outside Project", microservices: ["SharedApi"] }, target]);
+  assert.match(ui.panel.innerHTML, /<dt>Proyecto<\/dt><dd>No disponible<\/dd>/,
+    "only configured REQs may provide a project");
+});
+
 test("status selector filters literal portal status including unavailable", () => {
   const ui = filterHarness();
   ui.typed.setFiltersForTest("", "En curso");
@@ -756,23 +826,45 @@ test("status selector filters literal portal status including unavailable", () =
   assert.doesNotMatch(ui.list.innerHTML, /REQ100|REQ200/);
 });
 
-test("summary counts use all monitored REQs while filtered count and empty state reflect matches", () => {
+test("summary metrics follow filtered rows across pages and clear filters restores all counts", () => {
   const ui = filterHarness();
-  ui.typed.setFiltersForTest("pagos", "all");
-  ui.renderAll();
-  ui.typed.updateSummaryForTest(["REQ100", "REQ200", "REQ300"], [
-    { req: "REQ100", conversationStatus: "Pendiente de respuesta" },
-    { req: "REQ200", conversationStatus: "Respondida" },
-    { req: "REQ300", conversationStatus: "Finalizada" },
-  ]);
-  assert.equal(ui.fields.get("#count-total")?.textContent, 3);
+  const reqs = Array.from({ length: 13 }, (_, index) => `REQ${index + 100}`);
+  const results = reqs.map((req, index) => ({ req,
+    projectName: index === 0 ? "Payments" : "Other",
+    microservices: [], status: index === 0 ? "En curso" : "Finalizado",
+    conversationStatus: index === 0 ? "Pendiente de respuesta" : index === 1 ? "Respondida" :
+      index === 2 ? "En validación" : "Finalizada" }));
+  ui.typed.setDashboardForTest(reqs);
+  ui.typed.renderRowsForTest(reqs, results);
+  assert.equal(ui.fields.get("#count-total")?.textContent, 13);
   assert.equal(ui.fields.get("#count-pending")?.textContent, 1);
-  assert.match(String(ui.fields.get("#filter-count")?.textContent ?? ""), /1.*3/);
-  ui.typed.setFiltersForTest("sin-coincidencias", "all");
-  ui.renderAll();
-  assert.doesNotMatch(ui.list.innerHTML, /REQ100|REQ200|REQ300/);
+  assert.equal(ui.fields.get("#count-answered")?.textContent, 1);
+  assert.equal(ui.fields.get("#count-validation")?.textContent, 1);
+  assert.equal(ui.fields.get("#count-finished")?.textContent, 10);
+  ui.typed.setFiltersForTest("Payments", "all");
+  assert.equal(ui.fields.get("#count-total")?.textContent, 1);
+  assert.equal(ui.fields.get("#count-pending")?.textContent, 1);
+  assert.equal(ui.fields.get("#count-finished")?.textContent, 0);
+  assert.match(String(ui.fields.get("#filter-count")?.textContent ?? ""), /1.*13/);
+  ui.typed.setFiltersForTest("", "Finalizado");
+  assert.equal(ui.fields.get("#count-total")?.textContent, 12, "counts include filtered rows beyond the first page");
+  assert.equal(ui.fields.get("#count-answered")?.textContent, 1);
+  assert.equal(ui.fields.get("#count-validation")?.textContent, 1);
+  assert.equal(ui.fields.get("#count-finished")?.textContent, 10);
+  ui.typed.setFiltersForTest("sin-coincidencias", "Finalizado");
+  assert.equal(ui.fields.get("#count-total")?.textContent, 0);
+  assert.equal(ui.fields.get("#count-pending")?.textContent, 0);
   assert.equal(ui.stub("#empty-state").hidden, false);
   assert.match(ui.stub("#empty-state").textContent, /sin coincidencias/i);
+  ui.typed.clearTableFiltersForTest();
+  assert.equal(ui.fields.get("#count-total")?.textContent, 13);
+  assert.equal(ui.fields.get("#count-finished")?.textContent, 10);
+  assert.match(String(ui.fields.get("#filter-count")?.textContent ?? ""), /13.*13/);
+  assert.match(ui.list.innerHTML, /REQ100/);
+  ui.grid.select("REQ100");
+  ui.typed.setFiltersForTest("Other", "all");
+  ui.typed.clearTableFiltersForTest();
+  assert.deepEqual(Array.from(ui.typed.selectedReqsForTest()), ["REQ100"], "clearing filters must not change selection");
 });
 
 test("filters persist across re-render and detail controls follow the filtered rows", () => {
@@ -789,13 +881,9 @@ test("filters persist across re-render and detail controls follow the filtered r
   assert.match(ui.cell.innerHTML, /Proyecto Alfa/);
 });
 
-test("filter controls exist with accessible labels and escaped status options", () => {
+test("clear filters control is available", () => {
   const html = fs.readFileSync("web/index.html", "utf8");
-  assert.match(html, /id="filter-text"/);
-  assert.match(html, /id="filter-status"/);
+  assert.match(html, /id="clear-filters-button"[^>]*>Limpiar filtros<\/button>/);
   assert.match(html, /id="filter-count"/);
-  assert.match(html, /Estado no disponible/);
-  const ui = filterHarness();
-  ui.typed.renderRowsForTest(["REQ1"], [{ req: "REQ1", status: '<img src=x onerror=alert(1)>' }]);
-  assert.doesNotMatch(ui.stub("#filter-status").innerHTML, /<img/);
+  assert.match(frontendSource(), /elements\.clearFilters\.addEventListener\("click", clearTableFilters\)/);
 });

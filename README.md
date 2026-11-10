@@ -47,7 +47,7 @@ El resultado se guarda en `artifacts/req-responses.json`. Usa `--output ruta.jso
 
 ## Criterio de respuesta
 
-El estado oficial del portal tiene prioridad: cuando está `Finalizado` (o `Completed`/`Finalized` en inglés), la conversación queda `Finalizada`. Para solicitudes abiertas, si el último comentario de Operaciones contiene `en validación` o `en proceso de validación`, queda `En validación` y no genera una alerta de acción requerida. En los demás casos, la automatización identifica el comentario más reciente de Operaciones como el primer comentario cuyo autor es distinto del solicitante. La conversación queda `Respondida` cuando existe al menos un comentario o adjunto del solicitante posterior a ese comentario de Operaciones. Si Operaciones comentó y el solicitante todavía no contestó, queda `Pendiente de respuesta`.
+El estado oficial del portal tiene prioridad: cuando está `Finalizado` (o `Completed`/`Finalized` en inglés), la conversación queda `Finalizada`. Para solicitudes abiertas, si el último comentario de Operaciones contiene `en validación` o `en proceso de validación`, queda `En validación` y no genera una alerta de acción requerida. En los demás casos, la automatización identifica el comentario más reciente de Operaciones como el primer comentario cuyo autor es distinto del solicitante. Cuando «Petición para» incluye además inicial, ID y correo, usa el nombre identificado en el encabezado si coincide exactamente con una línea de esa tarjeta; si no puede identificarlo, no atribuye comentarios a Operaciones. La conversación queda `Respondida` cuando existe al menos un comentario o adjunto del solicitante posterior a ese comentario de Operaciones. Si Operaciones comentó y el solicitante todavía no contestó, queda `Pendiente de respuesta`. Los resultados guardados antes de esta corrección requieren una nueva consulta para actualizar su clasificación; no se modifican automáticamente.
 
 El estado original del portal se conserva en `status`. El estado calculado se entrega en `conversationStatus`, junto con `latestOperationsComment` y `requesterRepliesAfterOperations`.
 
@@ -81,7 +81,7 @@ pnpm monitor-req --req REQ123 --req REQ456
 
 Las REQ no seleccionadas conservan sus resultados y su estado previo de alertas.
 
-El monitor consulta las REQ y notifica cuando una conversación entra en `Pendiente de respuesta`, cuando Operaciones agrega un comentario nuevo mientras continúa pendiente y cuando el estado oficial cambia a `Finalizada`. Las alertas pendientes usan color rojo y las finalizadas color verde. Guarda el estado y una huella del comentario en `artifacts/req-status.json` para no repetir alertas.
+El monitor consulta las REQ y notifica cuando una conversación entra en `Pendiente de respuesta`, cuando detecta un comentario nuevo de Operaciones aunque el portal siga en «Pendiente» o no se pueda confirmar el orden de los comentarios, y cuando el estado oficial cambia a `Finalizada`. Una fecha recuperada de un comentario ya conocido no genera otra alerta; un comentario idéntico adicional se distingue cuando se conoce la lista de comentarios. No reenvía comentarios históricos ya conocidos al actualizar la aplicación. Las alertas pendientes usan color rojo, los comentarios nuevos sin certeza de acción requerida tienen una tarjeta informativa y las finalizadas color verde. Guarda el estado y la huella del comentario en `artifacts/req-status.json` para no repetir alertas; un envío fallido no confirma la entrega.
 
 Si el comentario vigente de Operaciones indica fecha y hora explícitas, la tabla muestra el **plazo indicado** en hora de Colombia; no es una fecha de cierre confirmada. Sin fecha explícita aparece «Sin plazo indicado», y tras respuesta o finalización, «Plazo inactivo». Mientras la REQ sigue pendiente, el monitor envía como máximo un recordatorio por ciclo y día entre las 08:00 y las 11:59 de Colombia. Una alerta nueva del mismo ciclo sustituye el recordatorio de esa mañana. Ejecuciones manuales fuera de esa ventana no envían recordatorios; `--dry-run` no registra entregas.
 
@@ -98,6 +98,8 @@ pnpm monitor-req --test-notification
 ```
 
 El monitor envía una Adaptive Card con el proyecto observado, cuando está disponible, los microservicios detectados y las URLs de Pull Request encontradas en `Descripción Detallada de la Solicitud`. Para solicitudes de análisis de código estático sin microservicios explícitos, también puede tomar los nombres de paquetes de código adjuntos (`.7z`, `.zip`, `.rar`, `.tar.gz`), sin usar informes PDF ni inferir el proyecto. El botón `Abrir REQ` usa el enlace compartible oficial de MiAsistencia360 y dirige al detalle específico después de autenticarse. Un HTTP `202 Accepted` confirma que Power Automate recibió la solicitud; confirma la publicación en Teams desde el historial de ejecuciones del workflow.
+
+En solicitudes de creación y configuración de repositorios/pipelines, si faltan etiquetas explícitas de microservicio, se reconocen pares `Nombre:` seguido de `Proyecto:` en la descripción cuando esta menciona repositorios. La tabla puede mostrar esos nombres también para resultados ya guardados, sin reescribir el archivo ni consultar el portal; las notificaciones históricas no se modifican.
 
 ### Ejecución programada
 
@@ -169,12 +171,14 @@ Con API activa, abre `http://127.0.0.1:8787`. La interfaz permite:
 
 - Ver estado y última revisión de las REQ monitoreadas, ordenadas de la última revisión a la primera; las REQ nuevas sin revisión aparecen al inicio.
 - La tabla muestra el estado literal observado en el portal; si falta, indica «Estado no disponible». El estado de conversación calculado aparece por separado en «Ver detalles» y sigue rigiendo alertas y recordatorios.
-- El proyecto se extrae únicamente de una línea explícita `Proyecto:` en la descripción detallada del portal; no se deduce del microservicio ni del título. La tabla, «Ver detalles» y la consulta manual muestran «Proyecto no disponible» o «No disponible» cuando falta. Para actualizar resultados ya guardados, ejecuta de nuevo el monitor; «Actualizar» solo recarga datos locales.
+- El proyecto observado se extrae de una línea explícita `Proyecto:` en la descripción detallada del portal. Si falta, la tabla puede mostrar un proyecto **inferido** cuando el microservicio coincide con el de otra REQ configurada que sí tiene proyecto; «Ver detalles» identifica el valor inferido. Ante proyectos distintos o ninguna coincidencia, permanece «Proyecto no disponible». La inferencia no cambia los resultados guardados, la consulta manual ni las tarjetas de Teams. Para obtener nuevos datos del portal, ejecuta el monitor; «Actualizar» solo recarga datos locales.
 - «Ver detalles» despliega únicamente datos ya guardados: descripción, instrucciones, metadatos, solicitante y fechas disponibles. Los datos personales permanecen ocultos hasta abrir el panel; los campos ausentes se indican como no disponibles. No realiza una consulta adicional al portal.
 - Pegar una o varias REQ, separadas por comas, espacios o saltos de línea, para agregarlas al monitoreo en una sola operación sin iniciar su análisis; también se pueden eliminar de `runtime/reqs.txt`. El scheduler independiente podrá analizarlas en su siguiente ciclo permitido.
 - En **Configuración**, ajustar el intervalo automático de 0 a 1440 minutos (`0` pausa el scheduler). Se guarda en `runtime/settings.json`, se aplica al próximo ciclo sin iniciar uno inmediato y prevalece sobre `MONITOR_INTERVAL_MINUTES`; los monitoreos manuales siguen disponibles.
 - Seleccionar en la tabla qué REQ disponibles ejecutar con **Ejecutar monitor**; sin selección, el botón no inicia nada. Las REQ bloqueadas con estado del portal `Finalizado` no se ejecutan ni manual ni automáticamente, sin eliminarlas de la lista ni borrar sus resultados.
 - La casilla de la cabecera de selección, a la izquierda de «Proyecto / Microservicio / REQ», marca o desmarca todas las REQ no bloqueadas, incluso las ocultas por filtros o en otras páginas.
+- Los indicadores Total, Pendientes, Respondidas, En validación y Finalizadas cuentan las REQ que pasan los filtros de la tabla, incluidas las de otras páginas. «Limpiar filtros» quita todos los filtros de columnas y restablece los indicadores; no modifica la selección ni los resultados guardados.
+- La columna «Estado del portal» conserva el estado literal y muestra por separado el estado calculado de la conversación; cuando se detecta un comentario de Operaciones, aparece «Respuesta de Operaciones registrada». Si no hay fechas suficientes para ordenar los comentarios, la clasificación calculada no confirma quién debe responder a continuación.
 - **Ejecutar todas** selecciona las REQ no bloqueadas y arranca una ejecución manual con un clic. **Ejecutar monitor** conserva la ejecución de solo las REQ seleccionadas.
 - El candado en **Acciones** desbloquea una REQ `Finalizado` para una nueva revisión incluso si sigue con ese estado; si la revisión vuelve a devolver `Finalizado`, se bloquea automáticamente. Se puede bloquear antes con el mismo control. La fila coloreada identifica la REQ que está en revisión, sin texto adicional junto al número.
 - Consultar una REQ específica sin agregarla al monitoreo ni enviar alertas a Teams.
@@ -191,6 +195,10 @@ curl -X POST http://127.0.0.1:8787/api/reqs/query \
   -H 'Content-Type: application/json' \
   -d '{"req":"REQ000007780445"}'
 ```
+
+## Compilación del frontend
+
+Después de instalar las dependencias con `pnpm install`, ejecuta `pnpm typecheck` y `pnpm build` antes de iniciar la API local. Vite compila `web/app.ts` en `dist/app.js`; la API conserva la ruta `/app.js` y el HTML existente. `pnpm test` compila el frontend y ejecuta las pruebas. Docker Compose compila el frontend dentro de la imagen.
 
 ## Docker Compose
 

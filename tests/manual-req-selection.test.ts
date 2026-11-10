@@ -112,6 +112,21 @@ test("invalid manual selections never start the monitor or mutate saved data", a
       assert.equal((await (await fetch(`${base}/api/monitor/status`)).json()).running, false);
     }
     assert.equal(JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8")).intervalMinutes, 0);
+    const repositoryResult = [{ req: "REQ102", status: "En curso", checkedAt: "2026-11-06T10:00:00.000Z",
+      requestDetails: { requestType: "Creacion y configuracion de repositorios/pipelines" },
+      description: "Configurar pipeline para los siguientes repositorios:\nNombre: PaymentsApi\nProyecto: Platform\nNombre: BillingWorker\nProyecto: Platform",
+      microservices: [] },
+    { req: "REQ103", status: "En curso", description: "Nombre: Someone\nProyecto: Platform",
+      requestDetails: { requestType: "Consulta general" }, microservices: [] }];
+    fs.writeFileSync(files[1], `${JSON.stringify(repositoryResult)}\n`);
+    const savedBeforeRead = hash();
+    const projected = await fetch(`${base}/api/dashboard`);
+    assert.equal(projected.status, 200);
+    const dashboard = await projected.json();
+    assert.deepEqual(dashboard.results[0].microservices, ["PaymentsApi", "BillingWorker"]);
+    assert.deepEqual(dashboard.results[1].microservices, [], "unrelated requests remain unchanged");
+    assert.deepEqual(hash(), savedBeforeRead, "dashboard enrichment must not rewrite saved results");
+    assert.equal((await (await fetch(`${base}/api/monitor/status`)).json()).running, false);
     for (const invalidResults of ["{", '[{"status":"Finalizado"}]']) {
       fs.writeFileSync(files[1], invalidResults);
       const unchanged = hash();
