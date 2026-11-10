@@ -49,6 +49,7 @@ type ReqResult = {
   pullRequestUrls: string[];
   detailUrl: string | null;
   latestOperationsComment: Comment | null;
+  comments?: Array<Comment & { isResponse: boolean }>;
   activeDeadline: ActiveDeadline | null;
   error?: string;
 };
@@ -60,6 +61,8 @@ type StoredState = Record<
     lastChecked: string;
     lastNotified?: string;
     latestOperationsCommentKey?: string;
+    operationsCommentOccurrence?: number;
+    unnotifiedOperationsCommentKey?: string;
     lastReminder?: { sourceKey: string; day: string };
   }
 >;
@@ -207,7 +210,7 @@ function trimToTeamsLimit(message: string): string {
   return trimmed === message ? message : `${trimmed}${suffix}`;
 }
 
-function buildNotification(result: ReqResult): string {
+function buildNotification(result: ReqResult, newOperationsComment = false): string {
   const comment = result.latestOperationsComment;
   const finalized = result.conversationStatus === "Finalizada";
   const answered = result.conversationStatus === "Respondida";
@@ -221,7 +224,9 @@ function buildNotification(result: ReqResult): string {
 
   return trimToTeamsLimit(
     [
-      finalized
+      newOperationsComment
+        ? `Nuevo comentario de Operaciones: ${result.req}`
+        : finalized
         ? `REQ finalizada: ${result.req}`
         : answered
           ? `REQ respondida por el solicitante: ${result.req}`
@@ -251,6 +256,27 @@ function buildNotification(result: ReqResult): string {
 function operationsCommentKey(comment: Comment | null): string | undefined {
   if (!comment) return undefined;
   return [comment.author, comment.date ?? "", comment.text].join("|");
+}
+
+function operationsCommentOccurrence(result: ReqResult): number | undefined {
+  const comment = result.latestOperationsComment;
+  if (!comment || !result.comments) return undefined;
+  return result.comments.filter((item) => item.isResponse &&
+    item.author === comment.author && item.text === comment.text).length;
+}
+
+/** Compare legacy date-bearing keys without mistaking a recovered timestamp for a new comment. */
+function sameOperationsComment(previous: string | undefined, comment: Comment | null,
+  previousOccurrence?: number, currentOccurrence?: number): boolean {
+  if (!previous || !comment) return false;
+  const first = previous.indexOf("|");
+  const second = previous.indexOf("|", first + 1);
+  if (first < 0 || second < 0 || previous.slice(0, first) !== comment.author ||
+    previous.slice(second + 1) !== comment.text) return false;
+  if (previousOccurrence !== undefined && currentOccurrence !== undefined &&
+    previousOccurrence !== currentOccurrence) return false;
+  const oldDate = previous.slice(first + 1, second);
+  return !oldDate || !comment.date || oldDate === comment.date;
 }
 
 function colombianPublicHolidays(year: number): Set<string> {
@@ -317,12 +343,19 @@ export async function processReqResult(
   notificationsEnabled = true,
 ): Promise<ReqState> {
   const currentCommentKey = operationsCommentKey(result.latestOperationsComment);
+  const currentOccurrence = operationsCommentOccurrence(result);
+  const sameComment = sameOperationsComment(previous?.latestOperationsCommentKey,
+    result.latestOperationsComment, previous?.operationsCommentOccurrence, currentOccurrence);
   const pendingAlert = result.conversationStatus === PENDING_STATUS &&
-    (previous?.conversationStatus !== PENDING_STATUS || previous?.latestOperationsCommentKey !== currentCommentKey || !previous?.lastNotified);
+    (previous?.conversationStatus !== PENDING_STATUS || !sameComment || !previous?.lastNotified);
   const finalizedAlert = result.conversationStatus === "Finalizada" &&
     (previous?.conversationStatus !== "Finalizada" || !previous?.lastNotified);
   const answeredAlert = result.conversationStatus === "Respondida" &&
     previous?.conversationStatus === PENDING_STATUS && Boolean(previous.lastNotified);
+  const operationsAlert = Boolean(currentCommentKey && previous?.latestOperationsCommentKey &&
+    (!sameComment || (previous.unnotifiedOperationsCommentKey &&
+      sameOperationsComment(previous.unnotifiedOperationsCommentKey, result.latestOperationsComment))) &&
+    !pendingAlert && !finalizedAlert);
   const day = reminderDay(now);
   const deadline = result.activeDeadline;
   const awaitingDeadline = result.conversationStatus === PENDING_STATUS && deadline && day;
@@ -333,24 +366,29 @@ export async function processReqResult(
     lastChecked: result.checkedAt,
     ...(previous?.lastNotified ? { lastNotified: previous.lastNotified } : {}),
     ...(currentCommentKey ? { latestOperationsCommentKey: currentCommentKey } : {}),
+    ...(currentOccurrence !== undefined ? { operationsCommentOccurrence: currentOccurrence } : {}),
+    ...(previous?.unnotifiedOperationsCommentKey
+      ? { unnotifiedOperationsCommentKey: previous.unnotifiedOperationsCommentKey } : {}),
     ...(previous?.lastReminder ? { lastReminder: previous.lastReminder } : {}),
   };
 
   if (!notificationsEnabled && !dryRun) {
-    if (pendingAlert || finalizedAlert || answeredAlert) delete next.lastNotified;
+    if (operationsAlert && currentCommentKey) next.unnotifiedOperationsCommentKey = currentCommentKey;
+    if (pendingAlert || finalizedAlert || answeredAlert || operationsAlert) delete next.lastNotified;
     console.log(`${result.req}: ${result.conversationStatus}, notificaciones desactivadas`);
     return next;
   }
 
-  if (pendingAlert || finalizedAlert || answeredAlert || reminder) {
+  if (pendingAlert || finalizedAlert || answeredAlert || operationsAlert || reminder) {
     const message = reminder && deadline
       ? trimToTeamsLimit(`Recordatorio: REQ pendiente de respuesta: ${result.req}\nPlazo indicado: ${new Intl.DateTimeFormat("es-CO", {
         timeZone: "America/Bogota", dateStyle: "short", timeStyle: "short",
       }).format(new Date(deadline.dueAt))}\nAbrir REQ: ${result.detailUrl ?? PORTAL_URL}`)
-      : buildNotification(result);
+      : buildNotification(result, operationsAlert);
     await send(message, result.detailUrl ?? PORTAL_URL, result.pullRequestUrls);
     if (!dryRun) {
       next.lastNotified = now.toISOString();
+      delete next.unnotifiedOperationsCommentKey;
       if (awaitingDeadline && deadline && day) next.lastReminder = { sourceKey: deadline.sourceKey, day };
     }
     console.log(`${result.req}: ${reminder ? "recordatorio" : "alerta"} ${dryRun ? "simulada" : "enviada"}`);
@@ -369,10 +407,13 @@ export function buildTeamsPayload(
   const isTest = title.startsWith("Prueba de notificación");
   const isFinalized = title.startsWith("REQ finalizada");
   const isAnswered = title.startsWith("REQ respondida por el solicitante");
-  const style = isTest ? "accent" : isFinalized || isAnswered ? "good" : "attention";
-  const color = isTest ? "Accent" : isFinalized || isAnswered ? "Good" : "Attention";
+  const isOperationsComment = title.startsWith("Nuevo comentario de Operaciones");
+  const style = isTest || isOperationsComment ? "accent" : isFinalized || isAnswered ? "good" : "attention";
+  const color = isTest || isOperationsComment ? "Accent" : isFinalized || isAnswered ? "Good" : "Attention";
   const banner = isTest
     ? "✓ Integración activa"
+    : isOperationsComment
+      ? "Nuevo comentario de Operaciones"
     : isFinalized
       ? "✓ REQ finalizada"
       : isAnswered
