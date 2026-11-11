@@ -470,6 +470,7 @@ async function renewPortalSession(usernameValue: unknown, passwordValue: unknown
       throw new Error("No fue posible iniciar sesión; verifica usuario y contraseña");
     }
     await saveAuthSession(context, username, AUTH_FILE);
+    monitorStatus.authRequired = false;
   } finally {
     await browser.close().catch(() => undefined);
     activeTask = null;
