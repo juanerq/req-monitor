@@ -19,7 +19,14 @@ export function lockedFinalizedReqs(
   });
 }
 
-export function eligibleReqs(configured: string[], results: PortalResult[], unlocked: Record<string, string>): string[] {
-  const locked = new Set(lockedFinalizedReqs(configured, results, unlocked));
+export function lockedReqs(configured: string[], results: PortalResult[], unlocked: Record<string, string>,
+  manuallyLocked: string[] = []): string[] {
+  const locked = new Set([...lockedFinalizedReqs(configured, results, unlocked), ...manuallyLocked]);
+  return configured.filter((req) => locked.has(req));
+}
+
+export function eligibleReqs(configured: string[], results: PortalResult[], unlocked: Record<string, string>,
+  manuallyLocked: string[] = []): string[] {
+  const locked = new Set(lockedReqs(configured, results, unlocked, manuallyLocked));
   return configured.filter((req) => !locked.has(req));
 }

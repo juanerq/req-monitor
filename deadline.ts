@@ -59,6 +59,12 @@ function commentTime(date: string | null): number | null {
     : null;
 }
 
+/** Keep only a validated portal comment calendar date for display-only estimates. */
+export function commentCalendarDate(date: string | null): string | null {
+  const timestamp = commentTime(date);
+  return timestamp === null ? null : new Date(timestamp).toISOString().slice(0, 10);
+}
+
 export type ActiveDeadline = {
   dueAt: string;
   sourceKey: string;
@@ -66,7 +72,7 @@ export type ActiveDeadline = {
 
 /** Read a stated calendar date without inventing a time or activating a reminder. */
 export function parseDateOnlyDeadline(text: string): string | null {
-  const dates = [...text.matchAll(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/g)];
+  const dates = [...text.matchAll(/\b\d{1,2}\/\d{1,2}\/\d{4}(?![\p{L}\p{N}])/gu)];
   if (dates.length !== 1 || /\b\d{1,2}:\d{2}\b/.test(text)) return null;
   const date = dates[0];
   if (!/\bantes\s+del\s+d[ií]a\s*[^\dA-Za-z]*$/i.test(text.slice(0, date.index))) return null;
@@ -81,7 +87,7 @@ export function parseDateOnlyDeadline(text: string): string | null {
 export function parseExplicitDeadline(text: string): string | null {
   if (!/\bantes\s+del\s+d[ií]a\b/i.test(text)) return null;
 
-  const dates = [...text.matchAll(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/g)];
+  const dates = [...text.matchAll(/\b\d{1,2}\/\d{1,2}\/\d{4}(?![\p{L}\p{N}])/gu)];
   if (dates.length !== 1) return null;
   if ([...text.matchAll(/\b\d{1,2}:\d{2}\b/g)].length !== 1) return null;
 

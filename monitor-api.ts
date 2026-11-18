@@ -8,8 +8,10 @@ import { chromium } from "playwright";
 import { authFilePath, loadAuthEnvironment, localAuthStatus, saveAuthSession, validateUsername } from "./auth-session.js";
 import { monitorAuthErrorDetector } from "./monitor-auth.js";
 import { readMonitorProgress } from "./monitor-progress.js";
-import { eligibleReqs, isValidReviewTime, lockedFinalizedReqs } from "./finalized-req-lock.js";
+import { eligibleReqs, isValidReviewTime, lockedReqs } from "./finalized-req-lock.js";
 import { repositoryRequestMicroservices } from "./req-details.js";
+import { closureOutcome } from "./closure-outcome.js";
+import { commentCalendarDate, deriveCommentCycle, parseDateOnlyDeadline, type CycleComment } from "./deadline.js";
 
 loadAuthEnvironment();
 
@@ -31,6 +33,8 @@ const APP_URL = process.env.APP_URL ??
   "https://miasistencia360-dwp.claro.com.co/dwp/app/#/catalog";
 const PORTAL_ORIGIN = new URL(APP_URL).origin;
 const REQ_PATTERN = /^REQ\d+$/i;
+const MISSING_TAGS = ["documentation_md", "logging_standard", "consumption_example"] as const;
+type MissingTag = typeof MISSING_TAGS[number];
 const MAX_BODY_BYTES = 64 * 1024;
 const MAX_QUERY_REQS = 10;
 const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
@@ -56,6 +60,8 @@ type MonitorSettings = {
   teamsWebhookUrl?: string;
   allowOutsideHoursRuns?: boolean;
   unlockedFinalizedReqs?: Record<string, string>;
+  manuallyLockedReqs?: string[];
+  missingTags?: Record<string, MissingTag[]>;
   intervalMinutes?: number;
 };
 
@@ -116,6 +122,19 @@ function publicHolidays(year: number): Map<string, string> {
   );
   holidayCache.set(year, holidays);
   return holidays;
+}
+
+function estimatedBusinessDeadline(commentDate: string | null): string | null {
+  const start = commentCalendarDate(commentDate);
+  if (!start) return null;
+  const day = new Date(`${start}T00:00:00.000Z`);
+  for (let remaining = 3; remaining > 0;) {
+    day.setUTCDate(day.getUTCDate() + 1);
+    const calendarDay = day.toISOString().slice(0, 10);
+    if (day.getUTCDay() !== 0 && day.getUTCDay() !== 6 &&
+      !publicHolidays(day.getUTCFullYear()).has(calendarDay)) remaining -= 1;
+  }
+  return day.toISOString().slice(0, 10);
 }
 
 function scheduleDecision(now = new Date()): ScheduleDecision {
@@ -205,14 +224,36 @@ function readResults(): unknown[] {
     return value.map((item: unknown) => {
       if (!item || typeof item !== "object") return item;
       const result = item as Record<string, unknown>;
+      const comment = result.latestOperationsComment;
+      const operationsText = comment && typeof comment === "object" && !Array.isArray(comment)
+        ? (comment as Record<string, unknown>).text : null;
+      const statedDeadlineDate = typeof operationsText === "string" ? parseDateOnlyDeadline(operationsText) : null;
+      const savedComments = result.comments;
+      const validComments = Array.isArray(savedComments) && savedComments.length > 0 && savedComments.every((entry) =>
+        entry && typeof entry === "object" && typeof entry.author === "string" &&
+        typeof entry.text === "string" && (typeof entry.date === "string" || entry.date === null) &&
+        typeof entry.isResponse === "boolean");
+      const cycle = validComments ? deriveCommentCycle(savedComments as CycleComment[], false) : null;
+      const deadlineOrderKnown = Boolean(cycle?.orderKnown && cycle.latestOperationsComment?.text === operationsText);
+      const commentDate = comment && typeof comment === "object" && !Array.isArray(comment) &&
+        typeof (comment as Record<string, unknown>).date === "string"
+        ? (comment as Record<string, string>).date : null;
+      const estimatedDeadlineDate = !statedDeadlineDate && !result.activeDeadline &&
+        result.conversationStatus === "Pendiente de respuesta" && deadlineOrderKnown
+        ? estimatedBusinessDeadline(commentDate) : null;
+      const withOutcome = { ...result, ...(statedDeadlineDate ? { statedDeadlineDate, deadlineOrderKnown } : {}),
+        ...(estimatedDeadlineDate ? { estimatedDeadlineDate } : {}), closureOutcome: closureOutcome(
+        typeof result.status === "string" ? result.status : null,
+        typeof operationsText === "string" ? operationsText : null,
+      ) };
       if (result.error || typeof result.description !== "string" ||
-          !Array.isArray(result.microservices) || result.microservices.length) return item;
+          !Array.isArray(result.microservices) || result.microservices.length) return withOutcome;
       const details = result.requestDetails;
       const requestType = details && typeof details === "object" && !Array.isArray(details)
         ? (details as Record<string, unknown>).requestType : null;
       const names = repositoryRequestMicroservices(result.description,
         typeof requestType === "string" ? requestType : null);
-      return names.length ? { ...result, microservices: names } : item;
+      return names.length ? { ...withOutcome, microservices: names } : withOutcome;
     });
   } catch {
     return [];
@@ -239,20 +280,37 @@ function currentLockedReqs(configured = readReqs()): string[] {
     // Keep the dashboard readable without making any REQ selectable from corrupt results.
     return configured;
   }
-  return lockedFinalizedReqs(configured, results, readSettings().unlockedFinalizedReqs ?? {});
+  const settings = readSettings();
+  return lockedReqs(configured, results, settings.unlockedFinalizedReqs ?? {}, settings.manuallyLockedReqs ?? []);
 }
 
 function currentEligibleReqs(configured = readReqs()): string[] {
-  return eligibleReqs(configured, readLockResults(), readSettings().unlockedFinalizedReqs ?? {});
+  const settings = readSettings();
+  return eligibleReqs(configured, readLockResults(), settings.unlockedFinalizedReqs ?? {}, settings.manuallyLockedReqs ?? []);
 }
 
-function removeUnlocksForRemovedReqs(reqs: string[]): void {
+function removeManualStateForRemovedReqs(reqs: string[]): void {
   const settings = readSettings();
   const saved = settings.unlockedFinalizedReqs;
   const kept = saved && Object.fromEntries(Object.entries(saved).filter(([req]) => reqs.includes(req)));
-  if (kept && Object.keys(kept).length !== Object.keys(saved).length) {
-    writeSettings({ ...settings, unlockedFinalizedReqs: kept });
+  const savedTags = settings.missingTags;
+  const keptTags = savedTags && Object.fromEntries(Object.entries(savedTags).filter(([req]) => reqs.includes(req)));
+  const savedLocks = settings.manuallyLockedReqs;
+  const keptLocks = savedLocks?.filter((req) => reqs.includes(req));
+  if ((kept && Object.keys(kept).length !== Object.keys(saved).length) ||
+      (keptTags && Object.keys(keptTags).length !== Object.keys(savedTags).length) ||
+      (keptLocks && keptLocks.length !== savedLocks?.length)) {
+    writeSettings({ ...settings, unlockedFinalizedReqs: kept, missingTags: keptTags, manuallyLockedReqs: keptLocks });
   }
+}
+
+function validateMissingTagList(value: unknown): MissingTag[] {
+  if (!Array.isArray(value) || value.length > MISSING_TAGS.length ||
+    value.some((tag) => typeof tag !== "string" || !MISSING_TAGS.includes(tag as MissingTag)) ||
+    new Set(value).size !== value.length) {
+    throw new Error("tags de faltantes inválidos");
+  }
+  return value as MissingTag[];
 }
 
 function readSettings(): MonitorSettings {
@@ -268,6 +326,18 @@ function readSettings(): MonitorSettings {
       Array.isArray(settings.unlockedFinalizedReqs) || Object.entries(settings.unlockedFinalizedReqs).some(([req, checkedAt]) =>
         !REQ_PATTERN.test(req) || req !== req.toUpperCase() || !isValidReviewTime(checkedAt)))) {
     throw new Error("unlockedFinalizedReqs inválido en configuración");
+  }
+  if (settings.manuallyLockedReqs !== undefined &&
+    (!Array.isArray(settings.manuallyLockedReqs) ||
+      settings.manuallyLockedReqs.some((req) => typeof req !== "string" || !REQ_PATTERN.test(req) || req !== req.toUpperCase()) ||
+      new Set(settings.manuallyLockedReqs).size !== settings.manuallyLockedReqs.length)) {
+    throw new Error("manuallyLockedReqs inválido en configuración");
+  }
+  if (settings.missingTags !== undefined &&
+    (!settings.missingTags || typeof settings.missingTags !== "object" || Array.isArray(settings.missingTags) ||
+      Object.entries(settings.missingTags).some(([req, tags]) =>
+        !REQ_PATTERN.test(req) || req !== req.toUpperCase() || validateMissingTagList(tags).length === 0))) {
+    throw new Error("missingTags inválido en configuración");
   }
   return settings;
 }
@@ -665,6 +735,8 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       reqs,
       results: readResults(),
       lockedReqs: currentLockedReqs(reqs),
+      missingTags: Object.fromEntries(Object.entries(readSettings().missingTags ?? {})
+        .filter(([req]) => reqs.includes(req))),
       monitor: { ...monitorStatus, activeTask },
       progress: monitorStatus.startedAt
         ? { startedAt: monitorStatus.startedAt, items: readMonitorProgress(PROGRESS_FILE) }
@@ -704,7 +776,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const reqs = forceReplace || !wouldShrink
       ? requestedReqs
       : mergeReqLists(currentReqs, requestedReqs);
-    removeUnlocksForRemovedReqs(reqs);
+    removeManualStateForRemovedReqs(reqs);
     writeReqs(reqs);
     json(response, 200, {
       reqs,
@@ -719,6 +791,32 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const reqs = [...new Set([...readReqs(), ...additions])];
     writeReqs(reqs);
     json(response, 201, { reqs });
+    return;
+  }
+  const missingTagsRoute = url.pathname.match(/^\/api\/reqs\/([^/]+)\/missing-tags$/);
+  if (request.method === "PUT" && missingTagsRoute) {
+    const req = decodeURIComponent(missingTagsRoute[1]).toUpperCase();
+    if (!REQ_PATTERN.test(req) || !readReqs().includes(req)) {
+      json(response, 404, { error: "REQ no monitoreada" });
+      return;
+    }
+    const body = await readBody(request) as { tags?: unknown } | null;
+    if (!body || typeof body !== "object" || Array.isArray(body)) {
+      json(response, 400, { error: "tags de faltantes inválidos" });
+      return;
+    }
+    let tags: MissingTag[];
+    try { tags = validateMissingTagList(body.tags); }
+    catch {
+      json(response, 400, { error: "tags de faltantes inválidos" });
+      return;
+    }
+    const settings = readSettings();
+    const missingTags = { ...settings.missingTags };
+    if (tags.length) missingTags[req] = tags;
+    else delete missingTags[req];
+    writeSettings({ ...settings, missingTags });
+    json(response, 200, { req, tags });
     return;
   }
   const lockRoute = url.pathname.match(/^\/api\/reqs\/([^/]+)\/lock$/);
@@ -742,19 +840,24 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
       return;
     }
     const result = readLockResults().find((item) => item.req === req);
-    if (result?.status?.trim() !== "Finalizado") {
-      json(response, 409, { error: "El estado del portal no es Finalizado" });
-      return;
-    }
-    if (!body.locked && !isValidReviewTime(result.checkedAt)) {
+    const finalized = result?.status?.trim() === "Finalizado";
+    if (!body.locked && finalized && !isValidReviewTime(result.checkedAt)) {
       json(response, 409, { error: "No se puede desbloquear una REQ sin fecha de revisión válida" });
       return;
     }
     const settings = readSettings();
     const unlocked = { ...settings.unlockedFinalizedReqs };
-    if (body.locked) delete unlocked[req];
-    else unlocked[req] = result.checkedAt!;
-    writeSettings({ ...settings, unlockedFinalizedReqs: unlocked });
+    const manuallyLocked = new Set(settings.manuallyLockedReqs ?? []);
+    if (body.locked) {
+      if (finalized) {
+        delete unlocked[req];
+        manuallyLocked.delete(req);
+      } else manuallyLocked.add(req);
+    } else {
+      manuallyLocked.delete(req);
+      if (finalized) unlocked[req] = result.checkedAt!;
+    }
+    writeSettings({ ...settings, unlockedFinalizedReqs: unlocked, manuallyLockedReqs: [...manuallyLocked] });
     json(response, 200, { req, locked: body.locked });
     return;
   }
@@ -762,7 +865,7 @@ async function handle(request: IncomingMessage, response: ServerResponse): Promi
     const req = decodeURIComponent(url.pathname.slice("/api/reqs/".length)).toUpperCase();
     if (!REQ_PATTERN.test(req)) throw new Error(`REQ inválida: ${req}`);
     const reqs = readReqs().filter((item) => item !== req);
-    removeUnlocksForRemovedReqs(reqs);
+    removeManualStateForRemovedReqs(reqs);
     writeReqs(reqs);
     json(response, 200, { reqs });
     return;

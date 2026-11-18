@@ -153,6 +153,8 @@ curl -X POST http://127.0.0.1:8787/api/reqs \
 curl -X DELETE http://127.0.0.1:8787/api/reqs/REQ000007780295
 ```
 
+Los faltantes manuales de una REQ monitoreada se actualizan con `PUT /api/reqs/:req/missing-tags`. Envía `{"tags":["documentation_md","logging_standard","consumption_example"]}` (cualquier subconjunto, sin duplicados); `[]` borra sus tags. `GET /api/dashboard` devuelve `missingTags` por REQ. La API rechaza identificadores no monitoreados y tags desconocidos.
+
 Ejecutar monitor y consultar estado:
 
 ```bash
@@ -160,7 +162,7 @@ curl -X POST http://127.0.0.1:8787/api/monitor/run
 curl http://127.0.0.1:8787/api/monitor/status
 ```
 
-Para una ejecución manual parcial, envía `{"reqs":["REQ123","REQ456"]}` a `POST /api/monitor/run`. La API rechaza selecciones vacías, REQ que no estén en la lista monitoreada y REQ bloqueadas. Una solicitud sin `reqs` ejecuta todas las REQ disponibles (no bloqueadas). Las ejecuciones programadas aplican el mismo bloqueo. Una REQ cuyo estado literal del portal sea `Finalizado` queda bloqueada hasta que se desbloquee desde Acciones; el desbloqueo se conserva tras recargar y permite una nueva revisión aunque continúe `Finalizado`. Si esa revisión vuelve a devolver `Finalizado`, queda bloqueada otra vez. El candado abierto permite volver a bloquearla antes de esa revisión.
+Para una ejecución manual parcial, envía `{"reqs":["REQ123","REQ456"]}` a `POST /api/monitor/run`. La API rechaza selecciones vacías, REQ que no estén en la lista monitoreada y REQ bloqueadas. Una solicitud sin `reqs` ejecuta todas las REQ disponibles (no bloqueadas). Las ejecuciones programadas aplican el mismo bloqueo. Cualquier REQ se puede bloquear o desbloquear desde Acciones; el bloqueo manual se conserva tras recargar y hasta que se desbloquee, y se elimina si la REQ se borra de la lista. Una REQ cuyo estado literal del portal sea `Finalizado` también queda bloqueada automáticamente hasta que se desbloquee desde Acciones; ese desbloqueo permite una nueva revisión aunque continúe `Finalizado`. Si esa revisión vuelve a devolver `Finalizado`, queda bloqueada otra vez.
 
 Cuando una REQ previamente notificada como «Pendiente de respuesta» pasa a «Respondida», se envía una tarjeta nueva de resolución sin «Acción requerida». Las tarjetas muestran los datos principales como campos etiquetados y separan comentarios y adjuntos del botón para abrir la REQ. Los webhooks de Teams no modifican tarjetas enviadas anteriormente; las tarjetas históricas permanecen como registro del estado anterior.
 

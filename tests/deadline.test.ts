@@ -38,6 +38,8 @@ test("extracts a stated date without assigning an unsupported time or reminder d
   assert.equal(parseDateOnlyDeadline(text), "2026-11-12");
   assert.equal(parseExplicitDeadline(text), null);
   assert.equal(parseDateOnlyDeadline("Antes del día 12/11/2026 11:59 p.m."), null);
+  assert.equal(parseDateOnlyDeadline("Esperamos tu información antes del día 🕦 20/11/2026_ 72 horas 🕦"), "2026-11-20");
+  assert.equal(parseExplicitDeadline("Esperamos tu información antes del día 🕦 20/11/2026_ 72 horas 🕦"), null);
   assert.equal(parseDateOnlyDeadline("Antes del día 31/11/2026"), null);
   assert.equal(parseDateOnlyDeadline("Antes del día 12/11/2026 o 13/11/2026"), null);
   assert.equal(parseDateOnlyDeadline("Publicado el 12/11/2026"), null);

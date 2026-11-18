@@ -4,6 +4,7 @@ import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
 import { conversationStatus, deriveCommentCycle, PORTAL_COMMENT_DATE_PATTERN, type ActiveDeadline } from "./deadline.js";
+import { closureOutcome, type ClosureOutcome } from "./closure-outcome.js";
 import { authFilePath, loadAuthEnvironment, saveAuthSession } from "./auth-session.js";
 import { extractPortalFieldsFromDom, parseReqDetails, type ReqDetails } from "./req-details.js";
 import { appendMonitorProgress } from "./monitor-progress.js";
@@ -43,6 +44,7 @@ type ReqResult = {
     | "Pendiente de respuesta"
     | "Sin comentario de operaciones";
   status: string | null;
+  closureOutcome?: ClosureOutcome | null;
   title: string | null;
   requester: string | null;
   description: string | null;
@@ -494,6 +496,7 @@ async function inspectReq(page: Page, req: string): Promise<ReqResult> {
       responded,
       conversationStatus: status,
       ...data.details,
+      closureOutcome: closureOutcome(data.details.status, latestOperationsComment?.text),
       microservices: microservicesFromStaticAnalysisAttachments({
         title: data.title,
         requestType: data.details.requestDetails.requestType,

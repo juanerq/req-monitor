@@ -8,6 +8,17 @@ import path from "node:path";
 import { setTimeout as delay } from "node:timers/promises";
 import { test } from "node:test";
 import { mergeReqResults } from "../monitor-req.ts";
+import { eligibleReqs, lockedReqs } from "../finalized-req-lock.ts";
+
+test("manual locks exclude active and unreviewed REQs from scheduled monitoring", () => {
+  const configured = ["REQ101", "REQ102", "REQ103"];
+  const results = [{ req: "REQ101", status: "Finalizado", checkedAt: "2026-11-05T10:00:00.000Z" },
+    { req: "REQ102", status: "En curso" }];
+  assert.deepEqual(lockedReqs(configured, results, {}, ["REQ102", "REQ103"]), configured);
+  assert.deepEqual(eligibleReqs(configured, results, {}, ["REQ102"]), ["REQ103"]);
+  assert.deepEqual(eligibleReqs(configured, results, { REQ101: "2026-11-05T10:00:00.000Z" }, ["REQ102"]),
+    ["REQ101", "REQ103"], "finalized unlock must not override an unrelated manual lock");
+});
 
 test("selected results replace only matching REQs and retain the other rows in order", () => {
   const existing = [
@@ -97,6 +108,37 @@ test("invalid manual selections never start the monitor or mutate saved data", a
     assert.deepEqual(files.slice(1).map((file) => fs.readFileSync(file, "utf8")), beforeAdd,
       "adding REQs does not analyze them or change Teams notification state");
     assert.equal((await (await fetch(`${base}/api/monitor/status`)).json()).running, false);
+    const lockActive = await fetch(`${base}/api/reqs/REQ102/lock`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ locked: true }),
+    });
+    assert.equal(lockActive.status, 200, "non-finalized REQs must support manual locking");
+    assert.deepEqual((await (await fetch(`${base}/api/dashboard`)).json()).lockedReqs, ["REQ101", "REQ102"]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8")).manuallyLockedReqs, ["REQ102"]);
+    const beforeRejectedRun = hash();
+    const rejectedLocked = await fetch(`${base}/api/monitor/run`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ reqs: ["REQ102"] }),
+    });
+    assert.equal(rejectedLocked.status, 409);
+    assert.deepEqual(hash(), beforeRejectedRun, "a rejected locked REQ must not change stored results");
+    const unlockActive = await fetch(`${base}/api/reqs/REQ102/lock`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ locked: false }),
+    });
+    assert.equal(unlockActive.status, 200);
+    assert.deepEqual((await (await fetch(`${base}/api/dashboard`)).json()).lockedReqs, ["REQ101"]);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8")).manuallyLockedReqs, []);
+    const lockNew = await fetch(`${base}/api/reqs/REQ103/lock`, {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ locked: true }),
+    });
+    assert.equal(lockNew.status, 200, "unreviewed REQs must also be lockable");
+    assert.deepEqual((await (await fetch(`${base}/api/dashboard`)).json()).lockedReqs, ["REQ101", "REQ103"]);
+    const removed = await fetch(`${base}/api/reqs/REQ103`, { method: "DELETE" });
+    assert.equal(removed.status, 200);
+    assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, "settings.json"), "utf8")).manuallyLockedReqs, [],
+      "deleting a REQ must remove its manual lock");
+    const restored = await fetch(`${base}/api/reqs`, {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ req: "REQ103" }),
+    });
+    assert.equal(restored.status, 201);
     for (const value of [-1, 1.5, "5", 1441]) {
       const invalid = await fetch(`${base}/api/settings/interval`, {
         method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ intervalMinutes: value }),
