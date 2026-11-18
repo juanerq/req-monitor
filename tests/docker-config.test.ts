@@ -6,7 +6,7 @@ test("Docker image copies imported deadline source before typecheck", () => {
   const dockerfile = fs.readFileSync("Dockerfile", "utf8");
   assert.match(dockerfile, /^COPY \. \.\/$/m, "Dockerfile copies allowlisted sources from context");
   const included = new Set(fs.readFileSync(".dockerignore", "utf8").split(/\r?\n/).filter((rule) => rule.startsWith("!")));
-  for (const source of ["deadline.ts", "auth-session.ts", "req-details.ts"]) {
+  for (const source of ["deadline.ts", "closure-outcome.ts", "operations-reviewer.ts", "auth-session.ts", "req-details.ts"]) {
     assert.ok(included.has(`!${source}`), `${source} must be in the image`);
   }
   assert.match(dockerfile, /RUN .*pnpm typecheck/);
@@ -25,7 +25,7 @@ test("Docker context contains image inputs but excludes credentials and HAR capt
   for (const source of copies.filter((source) => source !== ".")) {
     assert.ok(included.has(source), `Docker COPY input ${source} must be allowed`);
   }
-  for (const source of ["README.md", "tsconfig.json", "tsconfig.web.json", "vite.config.mts", "check-req.ts", "deadline.ts", "monitor-req.ts", "monitor-api.ts", "auth-session.ts", "req-details.ts", "web", "web/app.ts", "web/index.html", "web/styles.css"]) {
+  for (const source of ["README.md", "tsconfig.json", "tsconfig.web.json", "vite.config.mts", "check-req.ts", "deadline.ts", "closure-outcome.ts", "operations-reviewer.ts", "monitor-req.ts", "monitor-api.ts", "auth-session.ts", "req-details.ts", "web", "web/app.ts", "web/index.html", "web/styles.css"]) {
     assert.ok(included.has(source), `${source} must reach image`);
   }
   assert.ok(!included.has("web/**"), "new web files must not enter the image by default");

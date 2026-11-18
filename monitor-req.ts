@@ -3,6 +3,8 @@ import fs from "node:fs";
 import path from "node:path";
 import type { ActiveDeadline } from "./deadline.js";
 import type { ReqDetails } from "./req-details.js";
+import { closureOutcome, closureOutcomeLabel } from "./closure-outcome.js";
+import { operationsReviewerName } from "./operations-reviewer.js";
 
 const PENDING_STATUS = "Pendiente de respuesta";
 const DEFAULT_REQ_FILE = process.env.REQ_FILE ?? "reqs.txt";
@@ -64,6 +66,7 @@ type StoredState = Record<
     operationsCommentOccurrence?: number;
     unnotifiedOperationsCommentKey?: string;
     lastReminder?: { sourceKey: string; day: string };
+    lastProximity?: { sourceKey: string };
   }
 >;
 
@@ -210,9 +213,11 @@ function trimToTeamsLimit(message: string): string {
   return trimmed === message ? message : `${trimmed}${suffix}`;
 }
 
-function buildNotification(result: ReqResult, newOperationsComment = false): string {
+function buildNotification(result: ReqResult, newOperationsComment = false, deadlineAt?: string,
+  deadlineNotice?: "proximity" | "reminder"): string {
   const comment = result.latestOperationsComment;
   const finalized = result.conversationStatus === "Finalizada";
+  const outcome = finalized ? closureOutcome(result.status, comment?.text) ?? "unknown" : null;
   const answered = result.conversationStatus === "Respondida";
   const attachments = comment?.attachments
     .map((attachment) =>
@@ -224,7 +229,11 @@ function buildNotification(result: ReqResult, newOperationsComment = false): str
 
   return trimToTeamsLimit(
     [
-      newOperationsComment
+      deadlineNotice === "proximity"
+        ? `Plazo próximo: ${result.req}`
+        : deadlineNotice === "reminder"
+        ? `Recordatorio: REQ pendiente de respuesta: ${result.req}`
+        : newOperationsComment
         ? `Nuevo comentario de Operaciones: ${result.req}`
         : finalized
         ? `REQ finalizada: ${result.req}`
@@ -240,10 +249,15 @@ function buildNotification(result: ReqResult, newOperationsComment = false): str
         ? `${result.pullRequestUrls.length === 1 ? "Pull Request" : "Pull Requests"}:\n${result.pullRequestUrls.map((url) => `- ${url}`).join("\n")}`
         : null,
       `Estado del portal: ${result.status ?? "Desconocido"}`,
+      outcome ? `Resultado del cierre: ${closureOutcomeLabel(outcome)}` : null,
       comment
-        ? `${finalized ? "Última respuesta de Operaciones" : "Operaciones"}: ${comment.author}`
+        ? `${finalized ? "Última respuesta de Operaciones" : "Operaciones"}: ${operationsReviewerName(comment)}`
         : null,
       comment?.date ? `Fecha: ${comment.date}` : null,
+      deadlineAt ? `Plazo indicado: ${new Intl.DateTimeFormat("es-CO", {
+         timeZone: "America/Bogota", dateStyle: "short", timeStyle: "short",
+       }).format(new Date(deadlineAt))}` : null,
+      deadlineAt && deadlineNotice !== "reminder" ? "El plazo vence en menos de 24 horas." : null,
       comment?.text ? `\nComentario:\n${comment.text}` : null,
       attachments ? `\nAdjuntos:\n${attachments}` : null,
       `\nAbrir REQ: ${result.detailUrl ?? PORTAL_URL}`,
@@ -331,6 +345,15 @@ export function reminderDay(now: Date): string | null {
   return colombianPublicHolidays(Number(part("year"))).has(day) ? null : day;
 }
 
+function colombianCalendarDay(now: Date): string | null {
+  if (Number.isNaN(now.valueOf())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    timeZone: "America/Bogota", year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(now);
+  const part = (name: string) => parts.find((item) => item.type === name)?.value ?? "";
+  return `${part("year")}-${part("month")}-${part("day")}`;
+}
+
 type ReqState = StoredState[string];
 
 /** Send one alert at most per run; only accepted deliveries advance deduplication state. */
@@ -357,9 +380,20 @@ export async function processReqResult(
       sameOperationsComment(previous.unnotifiedOperationsCommentKey, result.latestOperationsComment))) &&
     !pendingAlert && !finalizedAlert);
   const day = reminderDay(now);
+  const localDay = colombianCalendarDay(now);
   const deadline = result.activeDeadline;
   const awaitingDeadline = result.conversationStatus === PENDING_STATUS && deadline && day;
+  const remaining = deadline ? Date.parse(deadline.dueAt) - now.valueOf() : NaN;
+  const nearDeadline = result.conversationStatus === PENDING_STATUS && deadline &&
+    remaining > 0 && remaining <= 24 * 60 * 60 * 1000;
+  const proximity = !pendingAlert && !finalizedAlert && !operationsAlert &&
+    nearDeadline &&
+    !(localDay && previous?.lastReminder?.sourceKey === deadline.sourceKey && previous.lastReminder.day === localDay) &&
+    previous?.lastProximity?.sourceKey !== deadline.sourceKey;
+  const coversProximity = nearDeadline && (pendingAlert || operationsAlert || proximity) &&
+    previous?.lastProximity?.sourceKey !== deadline.sourceKey;
   const reminder = !pendingAlert && !finalizedAlert && !operationsAlert && awaitingDeadline &&
+    !proximity &&
     (previous?.lastReminder?.sourceKey !== deadline.sourceKey || previous?.lastReminder?.day !== day);
   const next: ReqState = {
     conversationStatus: result.conversationStatus,
@@ -370,6 +404,7 @@ export async function processReqResult(
     ...(previous?.unnotifiedOperationsCommentKey
       ? { unnotifiedOperationsCommentKey: previous.unnotifiedOperationsCommentKey } : {}),
     ...(previous?.lastReminder ? { lastReminder: previous.lastReminder } : {}),
+    ...(previous?.lastProximity ? { lastProximity: previous.lastProximity } : {}),
   };
 
   if (!notificationsEnabled && !dryRun) {
@@ -379,19 +414,20 @@ export async function processReqResult(
     return next;
   }
 
-  if (pendingAlert || finalizedAlert || answeredAlert || operationsAlert || reminder) {
-    const message = reminder && deadline
-      ? trimToTeamsLimit(`Recordatorio: REQ pendiente de respuesta: ${result.req}\nPlazo indicado: ${new Intl.DateTimeFormat("es-CO", {
-        timeZone: "America/Bogota", dateStyle: "short", timeStyle: "short",
-      }).format(new Date(deadline.dueAt))}\nAbrir REQ: ${result.detailUrl ?? PORTAL_URL}`)
-      : buildNotification(result, operationsAlert);
+  if (pendingAlert || finalizedAlert || answeredAlert || operationsAlert || proximity || reminder) {
+    const message = buildNotification(result, operationsAlert,
+      (proximity || reminder || coversProximity) && deadline ? deadline.dueAt : undefined,
+      proximity ? "proximity" : reminder ? "reminder" : undefined);
     await send(message, result.detailUrl ?? PORTAL_URL, result.pullRequestUrls);
     if (!dryRun) {
       next.lastNotified = now.toISOString();
       delete next.unnotifiedOperationsCommentKey;
-      if (awaitingDeadline && deadline && day) next.lastReminder = { sourceKey: deadline.sourceKey, day };
+      if (deadline && (coversProximity || awaitingDeadline) && localDay) {
+        next.lastReminder = { sourceKey: deadline.sourceKey, day: localDay };
+      }
+      if (coversProximity && deadline) next.lastProximity = { sourceKey: deadline.sourceKey };
     }
-    console.log(`${result.req}: ${reminder ? "recordatorio" : "alerta"} ${dryRun ? "simulada" : "enviada"}`);
+    console.log(`${result.req}: ${proximity ? "plazo próximo" : reminder ? "recordatorio" : "alerta"} ${dryRun ? "simulada" : "enviada"}`);
   } else {
     console.log(`${result.req}: ${result.conversationStatus}, sin alerta nueva`);
   }
@@ -406,22 +442,30 @@ export function buildTeamsPayload(
   const [title, ...details] = message.split("\n");
   const isTest = title.startsWith("Prueba de notificación");
   const isFinalized = title.startsWith("REQ finalizada");
+  const closure = details.find((line) => line.startsWith("Resultado del cierre: "))?.slice("Resultado del cierre: ".length);
+  const approved = isFinalized && closure === "Cierre aprobado";
+  const needsCorrection = isFinalized && closure === "Cerrada con observaciones";
   const isAnswered = title.startsWith("REQ respondida por el solicitante");
   const isOperationsComment = title.startsWith("Nuevo comentario de Operaciones");
-  const style = isTest || isOperationsComment ? "accent" : isFinalized || isAnswered ? "good" : "attention";
-  const color = isTest || isOperationsComment ? "Accent" : isFinalized || isAnswered ? "Good" : "Attention";
+  const isProximity = title.startsWith("Plazo próximo:");
+  const style = isTest || isOperationsComment ? "accent" : approved || isAnswered ? "good" :
+    needsCorrection ? "warning" : isFinalized ? "emphasis" : "attention";
+  const color = isTest || isOperationsComment ? "Accent" : approved || isAnswered ? "Good" :
+    needsCorrection ? "Warning" : isFinalized ? "Default" : "Attention";
   const banner = isTest
     ? "✓ Integración activa"
     : isOperationsComment
       ? "Nuevo comentario de Operaciones"
+    : isProximity
+      ? "⚠ Plazo próximo"
     : isFinalized
-      ? "✓ REQ finalizada"
+      ? needsCorrection ? "Cerrada con observaciones" : approved ? "Cierre aprobado" : "Cierre sin resultado claro"
       : isAnswered
         ? "✓ REQ respondida"
       : "⚠ Acción requerida";
   const facts: { title: string; value: string }[] = [];
   const paragraphs: string[] = [];
-  const headings = /^(Título|Proyecto|Microservicios?|Estado del portal|Operaciones|Última respuesta de Operaciones|Fecha|Plazo indicado):\s*(.+)$/;
+  const headings = /^(Título|Proyecto|Microservicios?|Estado del portal|Resultado del cierre|Operaciones|Última respuesta de Operaciones|Fecha|Plazo indicado):\s*(.+)$/;
   for (const section of details.join("\n").split(/\n(?=Comentario:|Adjuntos:|Abrir REQ:)/)) {
     if (section.startsWith("Abrir REQ:")) continue;
     if (section.startsWith("Comentario:") || section.startsWith("Adjuntos:")) {
@@ -470,7 +514,21 @@ export function buildTeamsPayload(
               spacing: "Large",
             },
             ...(facts.length ? [{ type: "FactSet", facts, spacing: "Medium" }] : []),
-            ...paragraphs.map((text) => ({ type: "TextBlock", text, wrap: true, spacing: "Medium", separator: true })),
+            ...(isFinalized ? [{
+              type: "TextBlock",
+              text: needsCorrection ? "Revise las observaciones de Operaciones antes de crear otra solicitud." :
+                approved ? "Operaciones indicó una aprobación en su último comentario." :
+                  "No se pudo confirmar una aprobación. Revise el comentario de cierre en el portal.",
+              wrap: true,
+              spacing: "Medium",
+            }] : []),
+            ...paragraphs.map((text) => text.startsWith("Comentario:") ? {
+              type: "Container", style: "emphasis", spacing: "Medium", separator: true,
+              items: [
+                { type: "TextBlock", text: "Mensaje de Operaciones", weight: "Bolder", size: "Small" },
+                { type: "TextBlock", text: text.slice("Comentario:".length).trim(), wrap: true, spacing: "Small" },
+              ],
+            } : { type: "TextBlock", text, wrap: true, spacing: "Medium", separator: true }),
             {
               type: "TextBlock",
               text: "MiAsistencia360 · Monitor automático de REQ",

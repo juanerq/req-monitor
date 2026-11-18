@@ -11,6 +11,45 @@ const result = {
   activeDeadline: due,
 };
 
+test("Teams shows the signed Operations reviewer without changing the stored author or alert key", async () => {
+  const signed = { ...result, latestOperationsComment: {
+    ...result.latestOperationsComment, author: "Profile Owner",
+    text: "Please review.\n--Revisa: Cesar Carreño\nBefore 09/10/2026",
+  } };
+  const messages: string[] = [];
+  await processReqResult(signed, undefined, new Date("2026-10-09T13:00:00Z"), false,
+    async (message) => { messages.push(message); });
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /Operaciones: Cesar Carreño/);
+  assert.equal(signed.latestOperationsComment.author, "Profile Owner");
+});
+
+test("deadline reminders and proximity cards include the available request and Operations context", async () => {
+  const detailed = { ...result, title: "Service validation", projectName: "Alpha", microservices: ["Payments"],
+    latestOperationsComment: { ...result.latestOperationsComment, text: "Please provide evidence." } };
+  const previous = { conversationStatus: detailed.conversationStatus, lastChecked: detailed.checkedAt,
+    lastNotified: detailed.checkedAt,
+    latestOperationsCommentKey: "Operations|9 oct 2026, 08:00|Please provide evidence." };
+  for (const [now, heading] of [
+    ["2026-10-08T13:00:00Z", "Recordatorio: REQ pendiente de respuesta"],
+    ["2026-10-09T13:00:00Z", "Plazo próximo"],
+  ]) {
+    const sent: string[] = [];
+    await processReqResult(detailed, previous, new Date(now), false, async (message) => { sent.push(message); });
+    assert.equal(sent.length, 1);
+    assert.match(sent[0], new RegExp(`^${heading}: REQ123\\n`));
+    for (const item of ["Título: Service validation", "Proyecto: Alpha", "Microservicio: Payments",
+      "Estado del portal: Open", "Operaciones: Operations", "Plazo indicado:", "Comentario:\nPlease provide evidence."]) {
+      assert.ok(sent[0].includes(item), `missing ${item.split(":")[0]}`);
+    }
+    const card = buildTeamsPayload(sent[0], "https://portal.example/req123", []) as { attachments: { content: {
+      body: { type: string; facts?: { title: string; value: string }[]; items?: { text: string }[] }[] } }[] };
+    const body = card.attachments[0].content.body;
+    assert.ok(body.find((block) => block.type === "FactSet")?.facts?.some((fact) => fact.title === "Proyecto" && fact.value === "Alpha"));
+    assert.ok(body.some((block) => block.items?.some((item) => item.text === "Please provide evidence.")));
+  }
+});
+
 test("answered REQ sends a resolution update once after a pending Teams alert", async () => {
   const sent: string[] = [];
   const send = async (message: string) => { sent.push(message); };
@@ -110,6 +149,118 @@ test("queued Operations alert takes priority over a simultaneous morning reminde
   assert.equal(sent.length, 1);
 });
 
+test("warns once in the final 24 hours and suppresses the generic reminder that day", async () => {
+  const messages: string[] = [];
+  const send = async (message: string) => { messages.push(message); };
+  const key = "Operations|9 oct 2026, 08:00|Before 09/10/2026";
+  const prior = { conversationStatus: "Pendiente de respuesta" as const, lastChecked: result.checkedAt,
+    lastNotified: "2026-10-08T13:00:00.000Z", latestOperationsCommentKey: key };
+  const early = new Date("2026-10-08T04:58:00Z");
+  const before = await processReqResult(result, prior, early, false, send);
+  assert.equal(messages.length, 0);
+  const morning = new Date("2026-10-09T13:00:00Z");
+  const warned = await processReqResult(result, before, morning, false, send);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /^Plazo próximo: REQ123/);
+  assert.match(messages[0], /Plazo indicado:/);
+  const card = buildTeamsPayload(messages[0], "https://portal.example/req123", []) as { attachments: { content: {
+    body: { items?: { text: string }[]; type: string; facts?: { title: string; value: string }[] }[] } }[] };
+  assert.equal(card.attachments[0].content.body[0].items?.[0]?.text, "⚠ Plazo próximo");
+  assert.ok(card.attachments[0].content.body.find((item) => item.type === "FactSet")?.facts?.some((fact) =>
+    fact.title === "Plazo indicado"));
+  assert.equal(warned.lastProximity?.sourceKey, due.sourceKey);
+  assert.equal(warned.lastReminder?.day, "2026-10-09");
+  await processReqResult(result, warned, morning, false, send);
+  assert.equal(messages.length, 1);
+  const changedDeadline = { ...result, activeDeadline: { ...due, sourceKey: "new-cycle" } };
+  await processReqResult(changedDeadline, warned, morning, false, send);
+  assert.match(messages.at(-1) ?? "", /^Plazo próximo: REQ123/);
+});
+
+test("proximity never sends for date-only, inactive, past, disabled, failed, or dry-run delivery", async () => {
+  const now = new Date("2026-10-09T13:00:00Z");
+  const prior = { conversationStatus: "Pendiente de respuesta" as const, lastChecked: result.checkedAt,
+    lastNotified: "2026-10-08T13:00:00.000Z",
+    latestOperationsCommentKey: "Operations|9 oct 2026, 08:00|Before 09/10/2026",
+    lastReminder: { sourceKey: due.sourceKey, day: "2026-10-09" } };
+  const sent: string[] = [];
+  const send = async (message: string) => { sent.push(message); };
+  for (const candidate of [
+    { ...result, activeDeadline: null },
+    { ...result, activeDeadline: { ...due, dueAt: "2026-10-08T04:59:00Z" } },
+    { ...result, conversationStatus: "Respondida" as const },
+  ]) {
+    await processReqResult(candidate, candidate.conversationStatus === "Respondida"
+      ? { ...prior, conversationStatus: "Respondida" as const } : prior, now, false, send);
+  }
+  assert.equal(sent.length, 0);
+  const notifyPrior = { ...prior, lastReminder: { sourceKey: due.sourceKey, day: "2026-10-08" } };
+  const disabled = await processReqResult(result, notifyPrior, now, false, async () => {
+    throw Error("disabled must not send");
+  }, false);
+  assert.equal(disabled.lastProximity, undefined);
+  await assert.rejects(processReqResult(result, disabled, now, false, async () => {
+    throw Error("Teams failed");
+  }), /Teams failed/);
+  const simulated = await processReqResult(result, disabled, now, true, send);
+  assert.equal(simulated.lastProximity, undefined);
+  const delivered = await processReqResult(result, disabled, now, false, send);
+  assert.equal(delivered.lastProximity?.sourceKey, due.sourceKey);
+});
+
+test("an early proximity alert does not produce a morning reminder on the same Colombia day", async () => {
+  const sent: string[] = [];
+  const prior = { conversationStatus: "Pendiente de respuesta" as const, lastChecked: result.checkedAt,
+    lastNotified: "2026-10-08T13:00:00.000Z",
+    latestOperationsCommentKey: "Operations|9 oct 2026, 08:00|Before 09/10/2026" };
+  const early = await processReqResult(result, prior, new Date("2026-10-09T12:00:00Z"), false,
+    async (message) => { sent.push(message); });
+  assert.match(sent[0] ?? "", /^Plazo próximo: REQ123/);
+  assert.equal(early.lastReminder?.day, "2026-10-09");
+  await processReqResult(result, early, new Date("2026-10-09T13:00:00Z"), false,
+    async (message) => { sent.push(message); });
+  assert.equal(sent.length, 1);
+});
+
+test("a newly pending REQ already near its deadline includes the warning in its first Teams alert", async () => {
+  const messages: string[] = [];
+  const now = new Date("2026-10-09T13:00:00Z");
+  const first = await processReqResult(result, undefined, now, false, async (message) => { messages.push(message); });
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /^REQ pendiente de respuesta: REQ123/);
+  assert.match(messages[0], /vence en menos de 24 horas/i);
+  const card = buildTeamsPayload(messages[0], "https://portal.example/req123", []) as { attachments: { content: {
+    body: { type: string; facts?: { title: string; value: string }[]; text?: string }[] } }[] };
+  assert.ok(card.attachments[0].content.body.find((item) => item.type === "FactSet")?.facts?.some((fact) =>
+    fact.title === "Plazo indicado"));
+  assert.ok(card.attachments[0].content.body.some((item) => item.text?.includes("vence en menos de 24 horas")));
+  assert.equal(first.lastProximity?.sourceKey, due.sourceKey);
+  await processReqResult(result, first, now, false, async (message) => { messages.push(message); });
+  assert.equal(messages.length, 1);
+});
+
+test("exactly 24 hours qualifies, while an Operations alert carries proximity only once", async () => {
+  const now = new Date("2026-10-09T13:00:00Z");
+  const prior = { conversationStatus: "Pendiente de respuesta" as const, lastChecked: result.checkedAt,
+    lastNotified: "2026-10-08T13:00:00Z",
+    latestOperationsCommentKey: "Operations|9 oct 2026, 08:00|Before 09/10/2026" };
+  const messages: string[] = [];
+  const send = async (message: string) => { messages.push(message); };
+  const exactDeadline = { dueAt: "2026-10-10T13:00:00Z", sourceKey: "exact" };
+  const boundary = await processReqResult({ ...result, activeDeadline: exactDeadline }, prior, now, false, send);
+  assert.match(messages[0], /^Plazo próximo: REQ123/);
+  assert.equal(boundary.lastProximity?.sourceKey, exactDeadline.sourceKey);
+  messages.length = 0;
+  const shared = await processReqResult({ ...result, activeDeadline: exactDeadline },
+    { ...prior, unnotifiedOperationsCommentKey: prior.latestOperationsCommentKey }, now, false, send);
+  assert.equal(messages.length, 1);
+  assert.match(messages[0], /^Nuevo comentario de Operaciones: REQ123/);
+  assert.match(messages[0], /vence en menos de 24 horas/i);
+  assert.equal(shared.lastProximity?.sourceKey, exactDeadline.sourceKey);
+  await processReqResult({ ...result, activeDeadline: exactDeadline }, shared, now, false, send);
+  assert.equal(messages.length, 1);
+});
+
 test("Teams card separates readable facts from comments and uses answered status", () => {
   const payload = buildTeamsPayload(
     "REQ respondida por el solicitante: REQ123\nTítulo: Seguimiento\nProyecto: Portal\nEstado del portal: En curso\n\nComentario:\nEl solicitante confirmó la respuesta.\n\nAbrir REQ: https://portal.example/req123",
@@ -122,9 +273,40 @@ test("Teams card separates readable facts from comments and uses answered status
     { title: "Título", value: "Seguimiento" }, { title: "Proyecto", value: "Portal" },
     { title: "Estado del portal", value: "En curso" },
   ]);
-  assert.ok(card.body.some((block) => block.text?.includes("El solicitante confirmó la respuesta.")));
+  assert.ok(card.body.some((block) => block.items?.some((item) => item.text?.includes("El solicitante confirmó la respuesta."))));
   assert.equal(card.actions[0].url, "https://portal.example/req123");
   assert.ok(!card.body.some((block) => block.text?.includes("Abrir REQ:")), "avoid repeating action link in body");
+});
+
+test("finalized Teams cards show a distinct outcome without treating unknown as successful", async () => {
+  const sent: string[] = [];
+  const final = { ...result, status: "Finalizado", conversationStatus: "Finalizada" as const,
+    activeDeadline: null, latestOperationsComment: { ...result.latestOperationsComment,
+      text: "Se procede al cierre debido a que no cuenta con la información necesaria. Favor incluir el SSD en .md." } };
+  const now = new Date("2026-11-11T20:00:00Z");
+  const send = async (message: string) => { sent.push(message); };
+  const next = await processReqResult(final, undefined, now, false, send);
+  assert.equal(sent.length, 1);
+  assert.match(sent[0], /Resultado del cierre: Cerrada con observaciones/);
+  const card = buildTeamsPayload(sent[0], "https://portal.example/req123", []) as { attachments: { content: {
+    body: { type: string; style?: string; color?: string; text?: string; items?: { text: string }[];
+      facts?: { title: string; value: string }[] }[]; actions: { title: string; url: string }[] } }[] };
+  const content = card.attachments[0].content;
+  assert.equal(content.body[0].style, "warning");
+  assert.match(content.body[0].items?.[0]?.text ?? "", /Cerrada con observaciones/);
+  assert.ok(content.body.find((item) => item.type === "FactSet")?.facts?.some((fact) =>
+    fact.title === "Resultado del cierre" && fact.value === "Cerrada con observaciones"));
+  assert.equal(content.actions[0].url, "https://portal.example/req123");
+  assert.ok(content.body.some((item) => item.items?.some((part) => part.text?.includes("SSD en .md"))));
+  assert.ok(content.body.some((item) => item.text?.includes("Revise las observaciones")));
+  await processReqResult(final, next, now, false, send);
+  assert.equal(sent.length, 1, "the closing comment must not produce a second notification");
+
+  const unknown = await processReqResult({ ...final, latestOperationsComment: null }, undefined, now, false, send);
+  assert.equal(unknown.conversationStatus, "Finalizada");
+  const unknownCard = buildTeamsPayload(sent[1], "https://portal.example/req123", []) as typeof card;
+  assert.equal(unknownCard.attachments[0].content.body[0].style, "emphasis");
+  assert.match(unknownCard.attachments[0].content.body[0].items?.[0]?.text ?? "", /sin resultado claro/);
 });
 
 test("morning uses Colombia's local day, not the host timezone or UTC day", () => {
@@ -144,7 +326,7 @@ test("reminder sends once per local day and cycle, resuming next morning or reop
     lastNotified: result.checkedAt, latestOperationsCommentKey: "Operations|9 oct 2026, 08:00|Before 09/10/2026",
   }, morning, false, send);
   assert.equal(sent.length, 1);
-  assert.match(sent[0], /recordatorio/i);
+  assert.match(sent[0], /plazo próximo/i);
   assert.deepEqual(first.lastReminder, { sourceKey: due.sourceKey, day: "2026-10-09" });
   await processReqResult(result, first, new Date("2026-10-09T13:30:00Z"), false, send);
   assert.equal(sent.length, 1);
@@ -310,6 +492,6 @@ test("unknown comment time recovering does not cause a second pending change ale
   const next = await processReqResult({ ...result, latestOperationsComment: recovered.latestOperationsComment,
     activeDeadline: recovered.activeDeadline }, initial, now, false, send);
   assert.equal(sent.length, 2);
-  assert.match(sent[1], /recordatorio/i);
+  assert.match(sent[1], /plazo próximo/i);
   assert.deepEqual(next.lastReminder, { sourceKey: recovered.activeDeadline?.sourceKey, day: "2026-10-09" });
 });

@@ -4,6 +4,8 @@
 !README.md
 !check-req.ts
 !deadline.ts
+!closure-outcome.ts
+!operations-reviewer.ts
 !monitor-req.ts
 !monitor-api.ts
 !monitor-auth.ts
