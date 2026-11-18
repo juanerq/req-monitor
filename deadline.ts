@@ -31,20 +31,25 @@ const months: Record<string, number> = {
   sep: 8, oct: 9, nov: 10, dic: 11, dec: 11,
 };
 
+/** Match both legacy month-name timestamps and the portal's local slash-date display. */
+export const PORTAL_COMMENT_DATE_PATTERN = /(?:\b\d{1,2}\/\d{1,2}\/\d{4},\s*\d{1,2}:\d{2}\s*[ap]\.\s*m\.|\b\d{1,2}\s+(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[a-z]*\s+\d{4},\s*\d{1,2}:\d{2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2},\s+\d{4},?\s+(?:at\s+)?\d{1,2}:\d{2}(?:\s*[ap]m)?\b)/i;
+
 /** Parse portal display dates strictly; a guessed sequence could resurrect a stale deadline. */
 function commentTime(date: string | null): number | null {
   if (!date) return null;
+  const slash = date.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*(\d{1,2}):(\d{2})\s*([ap])\.\s*m\.$/i);
   const spanish = date.match(/^(\d{1,2})\s+([a-záéíóú]+)\s+(\d{4}),\s*(\d{1,2}):(\d{2})$/i);
   const english = date.match(/^([a-z]+)\s+(\d{1,2}),\s+(\d{4}),?\s+(?:at\s+)?(\d{1,2}):(\d{2})(?:\s*([ap])m)?$/i);
-  if (!spanish && !english) return null;
+  if (!slash && !spanish && !english) return null;
   const monthName = (spanish?.[2] ?? english?.[1] ?? "").slice(0, 3).toLowerCase();
-  const month = months[monthName];
-  const day = Number(spanish?.[1] ?? english?.[2]);
-  const year = Number(spanish?.[3] ?? english?.[3]);
-  let hour = Number(spanish?.[4] ?? english?.[4]);
-  const minute = Number(spanish?.[5] ?? english?.[5]);
-  const meridiem = english?.[6]?.toLowerCase();
+  const month = slash ? Number(slash[2]) - 1 : months[monthName];
+  const day = Number(slash?.[1] ?? spanish?.[1] ?? english?.[2]);
+  const year = Number(slash?.[3] ?? spanish?.[3] ?? english?.[3]);
+  let hour = Number(slash?.[4] ?? spanish?.[4] ?? english?.[4]);
+  const minute = Number(slash?.[5] ?? spanish?.[5] ?? english?.[5]);
+  const meridiem = (slash?.[6] ?? english?.[6])?.toLowerCase();
   if (month === undefined || year < 1993 || day < 1 || day > 31 || minute > 59 ||
+    month < 0 || month > 11 ||
     (meridiem ? hour < 1 || hour > 12 : hour > 23)) return null;
   if (meridiem) hour = hour % 12 + (meridiem === "p" ? 12 : 0);
   const value = Date.UTC(year, month, day, hour, minute);
@@ -58,6 +63,19 @@ export type ActiveDeadline = {
   dueAt: string;
   sourceKey: string;
 };
+
+/** Read a stated calendar date without inventing a time or activating a reminder. */
+export function parseDateOnlyDeadline(text: string): string | null {
+  const dates = [...text.matchAll(/\b\d{1,2}\/\d{1,2}\/\d{4}\b/g)];
+  if (dates.length !== 1 || /\b\d{1,2}:\d{2}\b/.test(text)) return null;
+  const date = dates[0];
+  if (!/\bantes\s+del\s+d[ií]a\s*[^\dA-Za-z]*$/i.test(text.slice(0, date.index))) return null;
+  const [day, month, year] = date[0].split("/").map(Number);
+  if (year < 1993 || month < 1 || month > 12 || day < 1) return null;
+  const calendar = new Date(Date.UTC(year, month - 1, day));
+  if (calendar.getUTCFullYear() !== year || calendar.getUTCMonth() !== month - 1 || calendar.getUTCDate() !== day) return null;
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`;
+}
 
 /** Parse only an unambiguous, explicitly stated local deadline; never infer closure. */
 export function parseExplicitDeadline(text: string): string | null {

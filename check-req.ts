@@ -3,7 +3,7 @@ import fs from "node:fs";
 import path from "node:path";
 import readline from "node:readline/promises";
 import { stdin, stdout } from "node:process";
-import { conversationStatus, deriveCommentCycle, type ActiveDeadline } from "./deadline.js";
+import { conversationStatus, deriveCommentCycle, PORTAL_COMMENT_DATE_PATTERN, type ActiveDeadline } from "./deadline.js";
 import { authFilePath, loadAuthEnvironment, saveAuthSession } from "./auth-session.js";
 import { extractPortalFieldsFromDom, parseReqDetails, type ReqDetails } from "./req-details.js";
 import { appendMonitorProgress } from "./monitor-progress.js";
@@ -278,7 +278,7 @@ async function extractFromDom(page: Page): Promise<{
 }> {
   await page.evaluate("globalThis.__name = (target) => target");
   const portalFields = await page.evaluate(extractPortalFieldsFromDom);
-  const raw = await page.evaluate(() => {
+  const raw = await page.evaluate((datePatternSource) => {
     const clean = (value: string | null | undefined): string =>
       (value ?? "").replace(/\s+/g, " ").trim();
     const cleanMultiline = (value: string | null | undefined): string =>
@@ -309,7 +309,7 @@ async function extractFromDom(page: Page): Promise<{
       }
     }
 
-    const datePattern = /(?:\b\d{1,2}\s+(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[a-z]*\s+\d{4},\s*\d{1,2}:\d{2}\b|\b(?:jan|feb|mar|apr|may|jun|jul|aug|sep|oct|nov|dec)[a-z]*\s+\d{1,2},\s+\d{4},?\s+(?:at\s+)?\d{1,2}:\d{2}(?:\s*[ap]m)?\b)/i;
+    const datePattern = new RegExp(datePatternSource, "i");
     const dateElements = [...section.querySelectorAll("*")].filter(
       (element) => element.children.length === 0 && datePattern.test(text(element)),
     );
@@ -333,7 +333,8 @@ async function extractFromDom(page: Page): Promise<{
 
     const comments = cards.map((card) => {
       const raw = clean(card.textContent);
-      const date = raw.match(datePattern)?.[0] ?? null;
+      const date = text(card.querySelector(".text-tertiary.media-column--no-grow")).match(datePattern)?.[0]
+        ?? raw.match(datePattern)?.[0] ?? null;
       const downloadLinks = [...card.querySelectorAll("a[download], [data-url], [data-href]")];
       const links = downloadLinks.length > 0
         ? downloadLinks
@@ -392,7 +393,7 @@ async function extractFromDom(page: Page): Promise<{
       title: titleCandidates[0] ?? null,
       comments,
     };
-  });
+  }, PORTAL_COMMENT_DATE_PATTERN.source);
   return { title: raw.title, details: parseReqDetails(portalFields), comments: raw.comments };
 }
 
@@ -525,6 +526,7 @@ async function main(): Promise<void> {
   try {
     const context = await browser.newContext({
       locale: "es-CO",
+      timezoneId: "America/Bogota",
       ...(storageStateExists ? { storageState: AUTH_FILE } : {}),
       acceptDownloads: false,
     });

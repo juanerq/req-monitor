@@ -1,6 +1,23 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { conversationStatus, deriveActiveDeadline, deriveCommentCycle, parseExplicitDeadline } from "../deadline.ts";
+import { conversationStatus, deriveActiveDeadline, deriveCommentCycle, parseExplicitDeadline, parseDateOnlyDeadline, PORTAL_COMMENT_DATE_PATTERN } from "../deadline.ts";
+
+test("parses the portal slash-date timestamp without guessing comment order", () => {
+  const requester = { author: "Requester", date: "4/11/2026, 8:19 p.\u00a0m.", text: "Reply", isResponse: false };
+  const operations = { author: "Operations", date: "13/11/2026, 4:59 p. m.", text: "Response", isResponse: true };
+  assert.match("4/11/2026, 8:19 p.\u00a0m.", PORTAL_COMMENT_DATE_PATTERN);
+  const cycle = deriveCommentCycle([operations, requester], false);
+  assert.equal(cycle.orderKnown, true);
+  assert.equal(cycle.latestOperationsComment, operations);
+  assert.deepEqual(cycle.requesterRepliesAfterOperations, []);
+  assert.equal(deriveCommentCycle([{ ...requester, date: "32/11/2026, 8:19 p. m." }, operations], false).orderKnown, false);
+  const midnight = { ...operations, date: "4/11/2026, 12:00 a.\u00a0m." };
+  const noon = { ...requester, date: "4/11/2026, 12:00 p. m." };
+  const sameDay = deriveCommentCycle([noon, midnight], false);
+  assert.equal(sameDay.orderKnown, true);
+  assert.equal(sameDay.requesterRepliesAfterOperations.length, 1);
+  assert.equal(deriveCommentCycle([operations, { ...requester, date: null }], false).activeDeadline, null);
+});
 import { processReqResult } from "../monitor-req.ts";
 
 const deadlineText = "Esperamos la información antes del día 🕦 09/10/2026 11:59 p.m. 🕦";
@@ -14,6 +31,22 @@ test("parses an explicit Bogota deadline without depending on local timezone", (
   assert.equal(parseExplicitDeadline(deadlineText), "2026-10-10T04:59:00.000Z");
   assert.equal(parseExplicitDeadline("Antes del día 09/10/2026 12:00 a.m."), "2026-10-09T05:00:00.000Z");
   assert.equal(parseExplicitDeadline("Antes del día 09/10/2026 12:00 p.m."), "2026-10-09T17:00:00.000Z");
+});
+
+test("extracts a stated date without assigning an unsupported time or reminder deadline", () => {
+  const text = "Esperamos tu información antes del día 🕦 12/11/2026 🕦";
+  assert.equal(parseDateOnlyDeadline(text), "2026-11-12");
+  assert.equal(parseExplicitDeadline(text), null);
+  assert.equal(parseDateOnlyDeadline("Antes del día 12/11/2026 11:59 p.m."), null);
+  assert.equal(parseDateOnlyDeadline("Antes del día 31/11/2026"), null);
+  assert.equal(parseDateOnlyDeadline("Antes del día 12/11/2026 o 13/11/2026"), null);
+  assert.equal(parseDateOnlyDeadline("Publicado el 12/11/2026"), null);
+  const cycle = deriveCommentCycle([
+    { author: "Operations", date: null, text, isResponse: true },
+    { author: "Requester", date: null, text: "Initial request", isResponse: false },
+  ], false);
+  assert.equal(cycle.activeDeadline, null);
+  assert.equal(cycle.orderKnown, false);
 });
 
 test("rejects invalid and ambiguous deadline values", () => {

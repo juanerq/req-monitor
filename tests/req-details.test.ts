@@ -17,6 +17,30 @@ test("check-req requests Spanish Colombia locale for portal labels", () => {
   assert.equal(/browser\.newContext\(\{[^}]*locale:\s*["']es-CO["']/s.test(source), true);
 });
 
+test("check-req uses Bogotá time for portal-rendered Enviado dates", async () => {
+  const source = readFileSync(new URL("../check-req.ts", import.meta.url), "utf8");
+  assert.match(source, /browser\.newContext\(\{[^}]*timezoneId:\s*["']America\/Bogota["']/s);
+
+  const browser = await chromium.launch();
+  try {
+    const context = await browser.newContext({ locale: "es-CO", timezoneId: "America/Bogota" });
+    const page = await context.newPage();
+    const sentAt = await page.evaluate(() => new Date("2026-11-17T14:40:00Z").toLocaleString("es-CO", {
+      day: "numeric", month: "numeric", year: "numeric", hour: "numeric", minute: "2-digit",
+    }));
+    assert.equal(sentAt, "17/11/2026, 9:40 a. m.");
+  } finally {
+    await browser.close();
+  }
+});
+
+test("portal comment extraction reads the visible slash-date label", () => {
+  const source = readFileSync(new URL("../check-req.ts", import.meta.url), "utf8");
+  assert.match(source, /page\.evaluate\(\(datePatternSource\) =>/);
+  assert.match(source, /PORTAL_COMMENT_DATE_PATTERN\.source/);
+  assert.match(source, /\.text-tertiary\.media-column--no-grow/);
+});
+
 test("DOM extraction ignores free-text labels before real detail fields", async () => {
   const browser = await chromium.launch();
   try {
