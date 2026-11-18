@@ -168,6 +168,8 @@ Cuando una REQ previamente notificada como «Pendiente de respuesta» pasa a «R
 
 API no usa token y debe permanecer publicada exclusivamente en `127.0.0.1`.
 
+- «Crear REQ» abre una ventana con los tipos disponibles. «Análisis de código estático» muestra los siete parámetros de configuración obligatorios (sede, tipo de operación, servicio, tipo de solicitud, tipo de cliente, dirección IP y cantidad de usuarios), el mensaje sugerido con botones para editar la plantilla y copiar el texto guardado, y la instrucción de adjuntar un archivo en 7zip. Los cambios de plantilla se guardan solo en el navegador actual y permanecen al recargar; no modifican otras sesiones o navegadores. El icono junto al título abre el formulario de MiAsistencia360 en otra pestaña; la solicitud se crea manualmente en el portal, no se envía ni se agrega al monitoreo desde el tablero. Validación SSD queda pendiente de su URL e instrucciones específicas.
+
 ## Interfaz web
 
 Con API activa, abre `http://127.0.0.1:8787`. La interfaz permite:

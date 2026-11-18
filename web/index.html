@@ -15,6 +15,7 @@
         <h1>REQ Monitor</h1>
       </div>
       <div class="header-actions">
+        <button id="create-req-button" class="secondary" type="button">Crear REQ</button>
         <div class="monitor-state">
           <span id="status-dot" class="status-dot"></span>
           <div>
@@ -102,6 +103,66 @@
 
       <section id="query-result" class="query-result" hidden aria-live="polite"></section>
     </main>
+
+    <dialog id="create-req-dialog" aria-labelledby="create-req-title">
+      <div class="details-dialog-header">
+        <h2 id="create-req-title">Crear REQ</h2>
+        <button id="create-req-close" class="secondary" type="button">Cerrar</button>
+      </div>
+      <div id="create-req-choices">
+        <p>Elegí el tipo de solicitud para ver las instrucciones antes de abrir el portal.</p>
+        <button id="static-analysis-choice" class="creation-choice secondary" type="button">Análisis de código estático</button>
+      </div>
+      <div id="static-analysis-guide" hidden>
+        <div class="creation-guide-heading">
+          <button id="create-req-back" class="secondary creation-back" type="button" aria-label="Volver a tipos de solicitud" title="Volver a tipos de solicitud"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
+          <h3>Análisis de código estático</h3>
+          <a class="creation-portal-link" href="https://miasistencia360-dwp.claro.com.co/dwp/app/#/srm/profile/SRGlbtarmdevapPEC4DMPDFU6NEGUJ/srm" target="_blank" rel="noopener noreferrer" aria-label="Abrir formulario en MiAsistencia360" title="Abrir formulario en MiAsistencia360"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 5h6v6m0-6-9 9"/><path d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg></a>
+        </div>
+        <section class="creation-section" aria-labelledby="creation-message-title">
+          <div class="creation-section-heading">
+            <h4 id="creation-message-title">Mensaje para la REQ</h4>
+            <div id="creation-message-actions" class="creation-message-actions">
+              <button id="create-req-edit" class="secondary" type="button">Editar plantilla</button>
+              <button id="create-req-copy" class="secondary" type="button">Copiar mensaje</button>
+            </div>
+          </div>
+          <p id="create-req-copy-status" class="creation-copy-status" role="status" aria-live="polite"></p>
+          <pre class="creation-message">Cordial saludo,
+
+Se solicita amablemente su colaboración con la validación de vulnerabilidad de los códigos compartidos en el siguiente adjunto, cualquier inquietud por favor comunicarse con,
+
+Juan Sebastian Mendez T.
+juan.mendez@vasscompany.com
+usuario de red:   46075453</pre>
+          <div id="creation-message-editor" class="creation-message-editor" hidden>
+            <label class="sr-only" for="creation-message-input">Mensaje para la REQ</label>
+            <textarea id="creation-message-input" rows="9"></textarea>
+            <div class="creation-editor-actions">
+              <button id="create-req-cancel-edit" class="secondary" type="button">Cancelar edición</button>
+              <button id="create-req-save" class="primary" type="button">Guardar plantilla</button>
+            </div>
+          </div>
+        </section>
+        <section class="creation-section" aria-labelledby="creation-config-title">
+          <h4 id="creation-config-title">Parámetros de configuración</h4>
+          <p id="creation-config-required" class="creation-required-note">Todos los parámetros son obligatorios.</p>
+          <dl class="creation-config" aria-describedby="creation-config-required">
+            <div><dt>Sede</dt><dd>1 - Trabajo desde Casa</dd></div>
+            <div><dt>Tipo de Operación</dt><dd>Transversal</dd></div>
+            <div><dt>Servicio</dt><dd>Análisis de código estático Checkmarx</dd></div>
+            <div><dt>Tipo de Solicitud</dt><dd>Solicitud análisis de código estático</dd></div>
+            <div><dt>Tipo de Cliente</dt><dd>Cliente Interno</dd></div>
+            <div><dt>Dirección IP del Equipo</dt><dd>0</dd></div>
+            <div><dt>Cantidad de Usuarios que Requieren la Solicitud</dt><dd>1</dd></div>
+          </dl>
+        </section>
+        <section class="creation-section" aria-labelledby="creation-attachment-title">
+          <h4 id="creation-attachment-title">Adjunto requerido</h4>
+          <p>Adjuntar archivo en 7zip</p>
+        </section>
+      </div>
+    </dialog>
 
     <dialog id="req-details-dialog" aria-label="Información de la REQ">
       <div class="details-dialog-header">

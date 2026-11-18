@@ -193,3 +193,163 @@ test("the served AG Grid keeps columns aligned under the application's CSP", asy
     fs.rmSync(scratch, { recursive: true, force: true });
   }
 });
+
+test("edited static-analysis message is saved locally and remains the copied template", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await page.route("http://grid.local/**", (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === "/api/dashboard") return route.fulfill({ json: {
+        reqs: [], results: [], monitor: { running: false }, auth: {}, schedule: { allowed: false },
+      } });
+      const file = ({ "/": "web/index.html", "/app.js": "dist/app.js", "/styles.css": "web/styles.css",
+        "/ag-grid-community.min.js": "node_modules/ag-grid-community/dist/ag-grid-community.min.js" } as Record<string, string>)[pathname];
+      return file ? route.fulfill({ body: fs.readFileSync(file), contentType: pathname.endsWith(".js") ? "text/javascript" :
+        pathname.endsWith(".css") ? "text/css" : "text/html" }) : route.fulfill({ status: 404, body: "" });
+    });
+    await page.goto("http://grid.local/");
+    await page.getByRole("button", { name: "Crear REQ" }).click();
+    let dialog = page.getByRole("dialog", { name: "Crear REQ" });
+    await dialog.getByRole("button", { name: "Análisis de código estático" }).click();
+    const original = await dialog.locator(".creation-message").innerText();
+    await dialog.getByRole("button", { name: "Editar plantilla" }).click();
+    const editor = dialog.getByRole("textbox", { name: "Mensaje para la REQ" });
+    assert.equal(await editor.inputValue(), original);
+    await editor.fill("Cambio sin guardar");
+    await dialog.getByRole("button", { name: "Cancelar edición" }).click();
+    assert.equal(await dialog.locator(".creation-message").innerText(), original);
+    await dialog.getByRole("button", { name: "Editar plantilla" }).click();
+    const revised = "Mensaje personalizado\nSegunda línea <script>alert(1)</script>";
+    await editor.fill(revised);
+    await dialog.getByRole("button", { name: "Guardar plantilla" }).click();
+    assert.equal(await dialog.locator(".creation-message").innerText(), revised);
+    assert.equal(await dialog.locator(".creation-message script").count(), 0);
+    await dialog.getByRole("status").getByText("Plantilla guardada").waitFor();
+    await page.reload();
+    await page.evaluate("Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: function(value) { window.copiedMessage = value; return Promise.resolve(); } } })");
+    await page.getByRole("button", { name: "Crear REQ" }).click();
+    dialog = page.getByRole("dialog", { name: "Crear REQ" });
+    await dialog.getByRole("button", { name: "Análisis de código estático" }).click();
+    assert.equal(await dialog.locator(".creation-message").innerText(), revised);
+    await dialog.getByRole("button", { name: "Copiar mensaje" }).click();
+    assert.equal(await page.evaluate(() => (window as typeof window & { copiedMessage?: string }).copiedMessage), revised);
+    await dialog.getByRole("button", { name: "Editar plantilla" }).click();
+    await editor.fill("\n  ");
+    await dialog.getByRole("button", { name: "Guardar plantilla" }).click();
+    await dialog.getByRole("status").getByText("Ingresa un mensaje antes de guardar").waitFor();
+    assert.equal(await dialog.locator(".creation-message").innerText(), revised);
+    await editor.fill("No debe guardarse");
+    await page.evaluate("Storage.prototype.setItem = function() { throw new Error('storage unavailable'); }");
+    await dialog.getByRole("button", { name: "Guardar plantilla" }).click();
+    await dialog.getByRole("status").getByText("No se pudo guardar la plantilla").waitFor();
+    assert.equal(await dialog.locator(".creation-message").innerText(), revised);
+    await dialog.getByRole("button", { name: "Cerrar" }).click();
+    await page.getByRole("button", { name: "Crear REQ" }).click();
+    await dialog.getByRole("button", { name: "Análisis de código estático" }).click();
+    assert.equal(await dialog.locator(".creation-message").innerText(), revised);
+  } finally {
+    await browser.close();
+  }
+});
+
+test("Create REQ shows static-analysis instructions before the portal link", async () => {
+  const browser = await chromium.launch({ headless: true });
+  try {
+    const page = await browser.newPage({ viewport: { width: 390, height: 844 } });
+    await page.route("http://grid.local/**", (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === "/api/dashboard") return route.fulfill({ json: {
+        reqs: [], results: [], monitor: { running: false }, auth: {}, schedule: { allowed: false },
+      } });
+      const file = ({ "/": "web/index.html", "/app.js": "dist/app.js", "/styles.css": "web/styles.css",
+        "/ag-grid-community.min.js": "node_modules/ag-grid-community/dist/ag-grid-community.min.js" } as Record<string, string>)[pathname];
+      return file ? route.fulfill({ body: fs.readFileSync(file), contentType: pathname.endsWith(".js") ? "text/javascript" :
+        pathname.endsWith(".css") ? "text/css" : "text/html" }) : route.fulfill({ status: 404, body: "" });
+    });
+    await page.goto("http://grid.local/");
+    await page.evaluate("Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText: function(value) { window.copiedMessage = value; return Promise.resolve(); } } })");
+    assert.equal(await page.getByRole("link", { name: "Abrir formulario en MiAsistencia360" }).count(), 0);
+    await page.getByRole("button", { name: "Crear REQ" }).click();
+    const dialog = page.getByRole("dialog", { name: "Crear REQ" });
+    await dialog.waitFor();
+    assert.equal(await dialog.getByText("Validación SSD").count(), 0);
+    assert.equal(await dialog.getByText("Parámetros de configuración").isVisible(), false);
+    assert.equal(await dialog.getByRole("link", { name: "Abrir formulario en MiAsistencia360" }).count(), 0);
+    await dialog.getByRole("button", { name: "Análisis de código estático" }).click();
+    await dialog.getByText("Parámetros de configuración", { exact: true }).waitFor();
+    assert.ok(await dialog.locator("#creation-message-title").evaluate((heading) =>
+      !!(heading.compareDocumentPosition(document.querySelector("#creation-config-title")) & Node.DOCUMENT_POSITION_FOLLOWING)),
+    "message and copy action should appear before the long configuration list");
+    const expectedConfiguration = [
+      ["Sede", "1 - Trabajo desde Casa"],
+      ["Tipo de Operación", "Transversal"],
+      ["Servicio", "Análisis de código estático Checkmarx"],
+      ["Tipo de Solicitud", "Solicitud análisis de código estático"],
+      ["Tipo de Cliente", "Cliente Interno"],
+      ["Dirección IP del Equipo", "0"],
+      ["Cantidad de Usuarios que Requieren la Solicitud", "1"],
+    ];
+    await dialog.getByText("Todos los parámetros son obligatorios.", { exact: true }).waitFor();
+    assert.equal(await dialog.locator(".creation-config").getAttribute("aria-describedby"), "creation-config-required");
+    assert.deepEqual(await dialog.locator(".creation-config dt").allInnerTexts(),
+      expectedConfiguration.map(([label]) => label));
+    assert.deepEqual(await dialog.locator(".creation-config dd").allInnerTexts(),
+      expectedConfiguration.map(([, value]) => value));
+    const message = await dialog.locator(".creation-message").innerText();
+    const expectedMessage = "Cordial saludo,\n\nSe solicita amablemente su colaboración con la validación de vulnerabilidad de los códigos compartidos en el siguiente adjunto, cualquier inquietud por favor comunicarse con,\n\nJuan Sebastian Mendez T.\njuan.mendez@vasscompany.com\nusuario de red:   46075453";
+    assert.equal(message, expectedMessage);
+    const back = dialog.getByRole("button", { name: "Volver a tipos de solicitud" });
+    assert.equal((await back.innerText()).trim(), "", "back button is an icon with an accessible name");
+    assert.equal(await back.locator("svg").count(), 1);
+    assert.ok(await back.evaluate((button) => button.getBoundingClientRect().width >= 44 && button.getBoundingClientRect().height >= 44));
+    assert.ok(await dialog.locator(".creation-config").evaluate((list) =>
+      list.getBoundingClientRect().height < 560 && list.scrollWidth <= list.clientWidth),
+    "configuration should be compact without horizontal overflow on mobile");
+    await page.setViewportSize({ width: 1280, height: 900 });
+    assert.ok(await dialog.locator(".creation-config").evaluate((list) => list.getBoundingClientRect().height < 380),
+      "configuration should remain compact on desktop");
+    await page.setViewportSize({ width: 390, height: 844 });
+    assert.equal(await page.evaluate(() => typeof navigator.clipboard?.writeText), "function");
+    await dialog.getByRole("button", { name: "Copiar mensaje" }).click();
+    assert.equal(await dialog.locator("#create-req-copy-status").innerText(), "Mensaje copiado");
+    assert.equal(await page.evaluate(() => (window as typeof window & { copiedMessage?: string }).copiedMessage), expectedMessage);
+    await page.evaluate("navigator.clipboard.writeText = function() { return Promise.reject(new Error('denied')); }");
+    await dialog.getByRole("button", { name: "Copiar mensaje" }).click();
+    await dialog.getByRole("status").getByText("No se pudo copiar el mensaje").waitFor();
+    await dialog.getByText("Adjuntar archivo en 7zip", { exact: true }).waitFor();
+    const link = dialog.getByRole("link", { name: "Abrir formulario en MiAsistencia360" });
+    assert.equal(await link.locator("xpath=..").getAttribute("class"), "creation-guide-heading");
+    assert.equal((await link.innerText()).trim(), "", "portal link should be icon-only with an accessible name");
+    assert.equal(await link.locator("svg[aria-hidden=true]").count(), 1);
+    assert.ok(await link.evaluate((element) => element.getBoundingClientRect().width >= 44 && element.getBoundingClientRect().height >= 44));
+    assert.equal(await dialog.locator("#creation-attachment-title").locator("xpath=..").getByRole("link").count(), 0);
+    assert.equal(await link.getAttribute("href"), "https://miasistencia360-dwp.claro.com.co/dwp/app/#/srm/profile/SRGlbtarmdevapPEC4DMPDFU6NEGUJ/srm");
+    assert.equal(await link.getAttribute("target"), "_blank");
+    assert.match(await link.getAttribute("rel") ?? "", /noopener/);
+    assert.match(await link.getAttribute("rel") ?? "", /noreferrer/);
+    assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
+    for (const width of [390, 1280]) {
+      await page.setViewportSize({ width, height: 900 });
+      const headerPosition = await dialog.evaluate((element) => {
+        element.scrollTop = 460;
+        return { dialogTop: element.getBoundingClientRect().top,
+          headerTop: element.querySelector(".details-dialog-header").getBoundingClientRect().top };
+      });
+      assert.ok(headerPosition.headerTop <= headerPosition.dialogTop + 2,
+        `sticky modal header must cover scrolled content at ${width}px`);
+    }
+    await back.click();
+    assert.equal(await dialog.locator("#create-req-copy-status").innerText(), "");
+    assert.equal(await dialog.getByText("Parámetros de configuración").isVisible(), false);
+    assert.equal(await dialog.getByRole("link", { name: "Abrir formulario en MiAsistencia360" }).count(), 0);
+    assert.equal(await dialog.getByRole("button", { name: "Análisis de código estático" }).count(), 1);
+    await dialog.getByRole("button", { name: "Análisis de código estático" }).click();
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Crear REQ" }).click();
+    assert.equal(await dialog.getByRole("link", { name: "Abrir formulario en MiAsistencia360" }).count(), 0);
+    await dialog.getByRole("button", { name: "Análisis de código estático" }).waitFor();
+  } finally {
+    await browser.close();
+  }
+});

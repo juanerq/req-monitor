@@ -87,6 +87,10 @@ const elements = {
   credentialsDialog: document.querySelector("#credentials-dialog"),
   credentialsForm: document.querySelector("#credentials-form"),
   toast: document.querySelector("#toast"),
+  createReqButton: document.querySelector("#create-req-button"),
+  createReqDialog: document.querySelector("#create-req-dialog"),
+  createReqChoices: document.querySelector("#create-req-choices"),
+  staticAnalysisGuide: document.querySelector("#static-analysis-guide"),
 };
 
 function escapeHtml(value) {
@@ -772,6 +776,94 @@ async function queryReq(req, rowButton: any = null) {
 
 elements.credentialsButton.addEventListener("click", () => {
   openCredentialsDialog();
+});
+
+const copyStatus = document.querySelector("#create-req-copy-status");
+const messagePreview = document.querySelector(".creation-message");
+const messageEditor = document.querySelector("#creation-message-editor");
+const messageInput = document.querySelector("#creation-message-input");
+const messageActions = document.querySelector("#creation-message-actions");
+const defaultMessage = messagePreview.textContent.trim();
+const messageStorageKey = "req-monitor:static-analysis-message:v1";
+
+function closeMessageEditor() {
+  messageEditor.hidden = true;
+  messagePreview.hidden = false;
+  messageActions.hidden = false;
+}
+
+elements.createReqButton.addEventListener("click", () => {
+  try {
+    const saved = localStorage.getItem(messageStorageKey);
+    messagePreview.textContent = saved?.trim() ? saved : defaultMessage;
+  } catch { messagePreview.textContent = defaultMessage; }
+  elements.createReqDialog.showModal();
+});
+document.querySelector("#create-req-close").addEventListener("click", () => elements.createReqDialog.close());
+document.querySelector("#create-req-edit").addEventListener("click", () => {
+  messageInput.value = messagePreview.textContent.trim();
+  messagePreview.hidden = true;
+  messageActions.hidden = true;
+  messageEditor.hidden = false;
+  copyStatus.textContent = "";
+  delete copyStatus.dataset.state;
+  messageInput.setSelectionRange(0, 0);
+  messageInput.focus({ preventScroll: true });
+});
+document.querySelector("#create-req-cancel-edit").addEventListener("click", () => {
+  closeMessageEditor();
+  copyStatus.textContent = "";
+  document.querySelector("#create-req-edit").focus();
+});
+document.querySelector("#create-req-save").addEventListener("click", () => {
+  const message = messageInput.value.trim();
+  if (!message) {
+    copyStatus.dataset.state = "error";
+    copyStatus.textContent = "Ingresa un mensaje antes de guardar";
+    return;
+  }
+  try {
+    localStorage.setItem(messageStorageKey, message);
+    messagePreview.textContent = message;
+    closeMessageEditor();
+    copyStatus.dataset.state = "success";
+    copyStatus.textContent = "Plantilla guardada";
+    document.querySelector("#create-req-edit").focus();
+  } catch {
+    copyStatus.dataset.state = "error";
+    copyStatus.textContent = "No se pudo guardar la plantilla";
+  }
+});
+document.querySelector("#create-req-copy").addEventListener("click", async () => {
+  try {
+    await navigator.clipboard.writeText(messagePreview.textContent.trim());
+    copyStatus.dataset.state = "success";
+    copyStatus.textContent = "Mensaje copiado";
+  } catch {
+    copyStatus.dataset.state = "error";
+    copyStatus.textContent = "No se pudo copiar el mensaje";
+  }
+});
+document.querySelector("#static-analysis-choice").addEventListener("click", () => {
+  elements.createReqChoices.hidden = true;
+  elements.staticAnalysisGuide.hidden = false;
+  document.querySelector("#create-req-back").focus();
+});
+document.querySelector("#create-req-back").addEventListener("click", () => {
+  copyStatus.textContent = "";
+  delete copyStatus.dataset.state;
+  closeMessageEditor();
+  elements.staticAnalysisGuide.hidden = true;
+  elements.createReqChoices.hidden = false;
+  document.querySelector("#static-analysis-choice").focus();
+});
+elements.createReqDialog.addEventListener("close", () => {
+  copyStatus.textContent = "";
+  delete copyStatus.dataset.state;
+  closeMessageEditor();
+  elements.staticAnalysisGuide.hidden = true;
+  elements.createReqChoices.hidden = false;
+  elements.createReqButton.focus();
 });
 
 document.querySelector("#req-details-close").addEventListener("click", () => elements.detailsDialog.close());
