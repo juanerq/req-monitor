@@ -3,19 +3,21 @@
   <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <meta name="color-scheme" content="dark">
+    <meta name="color-scheme" content="dark light">
     <meta name="ag-grid-style-nonce" content="__GRID_STYLE_NONCE__">
-    <title>REQ Monitor</title>
+    <title>REQ Monitor · Mi Asistencia 360</title>
+    <link rel="icon" type="image/svg+xml" sizes="any" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24'%3E%3Crect width='24' height='24' rx='5' fill='%23302951'/%3E%3Cpath d='M3 12h4l3-7 4 14 3-7h4' fill='none' stroke='%23c9bfff' stroke-width='2' stroke-linecap='round' stroke-linejoin='round'/%3E%3C/svg%3E">
     <link rel="stylesheet" href="/styles.css">
   </head>
   <body>
     <header class="topbar">
-      <div>
-        <p class="eyebrow">MIASISTENCIA360</p>
-        <h1>REQ Monitor</h1>
-      </div>
+      <a class="workspace-brand" href="/" aria-label="Mi Asistencia 360, inicio">
+        <span class="brand-mark" aria-hidden="true"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 12h4l3-7 4 14 3-7h4"/></svg></span>
+        <span>Mi Asistencia <b>360</b></span>
+      </a>
       <div class="header-actions">
         <button id="create-req-button" class="secondary" type="button">Crear REQ</button>
+        <button id="theme-button" class="secondary" type="button" aria-pressed="false">Tema claro</button>
         <div class="monitor-state">
           <span id="status-dot" class="status-dot"></span>
           <div>
@@ -24,7 +26,12 @@
           </div>
         </div>
         <div>
-          <button id="credentials-button" class="credentials-button" type="button" title="Iniciar o renovar sesión de MiAsistencia360"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 17l5-5-5-5m5 5H3"/><path d="M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7"/></svg><span>Iniciar sesión</span></button>
+          <div class="account-actions">
+            <button id="credentials-button" class="credentials-button" type="button" title="Iniciar o renovar sesión de MiAsistencia360"><svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M10 17l5-5-5-5m5 5H3"/><path d="M12 3h7a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-7"/></svg><span>Iniciar sesión</span></button>
+            <button id="settings-button" class="secondary settings-button" type="button" commandfor="settings-dialog" command="show-modal" aria-label="Configuración" title="Configuración del monitoreo">
+              <svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2h-1a1 1 0 0 0-1 1v.2a2 2 0 0 1-1 1.7l-.4.2a2 2 0 0 1-2 0l-.2-.1a1 1 0 0 0-1.4.4l-1 1.7a1 1 0 0 0 .4 1.4l.2.1a2 2 0 0 1 1 1.7v.5a2 2 0 0 1-1 1.8l-.2.1a1 1 0 0 0-.4 1.4l1 1.7a1 1 0 0 0 1.4.4l.2-.1a2 2 0 0 1 2 0l.4.2a2 2 0 0 1 1 1.7v.2a1 1 0 0 0 1 1h2a1 1 0 0 0 1-1v-.2a2 2 0 0 1 1-1.7l.4-.2a2 2 0 0 1 2 0l.2.1a1 1 0 0 0 1.4-.4l1-1.7a1 1 0 0 0-.4-1.4l-.2-.1a2 2 0 0 1-1-1.8v-.5a2 2 0 0 1 1-1.7l.2-.1a1 1 0 0 0 .4-1.4l-1-1.7a1 1 0 0 0-1.4-.4l-.2.1a2 2 0 0 1-2 0l-.4-.2a2 2 0 0 1-1-1.7V3a1 1 0 0 0-1-1z" transform="translate(0 1.3)"/><circle cx="12" cy="12" r="3"/></svg>
+            </button>
+          </div>
           <small id="auth-status" role="status">Comprobando sesión local</small>
         </div>
       </div>
@@ -34,29 +41,41 @@
       <section class="list-section">
         <div class="section-heading">
           <div>
-            <p class="eyebrow">SEGUIMIENTO</p>
-            <h2>REQ monitoreadas</h2>
+            <h1>REQ monitoreadas</h1>
+            <p class="section-description">Seguí las respuestas y los plazos de tus solicitudes.</p>
           </div>
           <div class="actions">
-            <span id="selection-count" class="selection-count" role="status">Seleccioná REQ en la tabla</span>
-            <button id="outside-hours-button" class="secondary outside-hours-button" type="button" aria-pressed="false" title="Permitir ejecuciones manuales y automáticas fuera del horario laboral" disabled>Habilitar fuera de horario</button>
-            <button id="run-button" class="primary" type="button" disabled>Ejecutar monitor</button>
             <button id="run-all-button" class="secondary" type="button" disabled>Ejecutar todas</button>
+            <button id="run-button" class="secondary" type="button" disabled>Ejecutar selección</button>
+            <button id="lookup-button" class="secondary" type="button" commandfor="lookup-dialog" command="show-modal">Consulta directa</button>
+            <button id="add-button" class="primary" type="button" commandfor="add-dialog" command="show-modal"><span aria-hidden="true">+</span> Agregar REQ</button>
           </div>
         </div>
-        <p class="schedule-note">Al habilitar fuera de horario, también se ejecutará el monitor automático y podrá enviar alertas a Teams.</p>
-
-        <form id="add-form" class="add-form">
-          <label for="add-req">Agregar REQ al monitoreo</label>
-          <div class="inline-form">
-            <textarea id="add-req" name="reqs" rows="2" placeholder="REQ000007780500, REQ000007780501" aria-describedby="add-req-hint" autocomplete="off" required></textarea>
-            <button class="secondary" type="submit">Agregar</button>
-          </div>
-          <p id="add-req-hint" class="add-req-hint">Ingresa varias REQ separadas por comas, espacios o saltos de línea.</p>
-        </form>
-
+        <div class="triage-strip" role="group" aria-label="Resumen de monitoreo">
+          <button type="button" data-triage="all" aria-pressed="true"><span>Total monitoreadas</span><output>—</output></button>
+          <button type="button" data-triage="pending" aria-pressed="false"><span>Pendientes de respuesta</span><output>—</output></button>
+          <button type="button" data-triage="recent" aria-pressed="false" title="Últimos 7 días"><span>Respuesta reciente</span><output>—</output></button>
+          <button type="button" data-triage="due" aria-pressed="false" title="Vencidas o por vencer en 24 horas"><span>Plazos en riesgo</span><output>—</output></button>
+        </div>
         <div id="live-progress" class="live-progress" role="status" aria-live="polite" hidden></div>
-        <div class="table-filters" role="group" aria-label="Filtros de REQ">
+        <div class="filter-bar" role="group" aria-label="Filtros de REQ">
+          <label class="workspace-search">
+            <svg aria-hidden="true" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></svg>
+            <span class="sr-only">Buscar por REQ, proyecto o microservicio</span>
+            <input id="filter-search" type="search" placeholder="Buscar REQ, proyecto o microservicio" autocomplete="off">
+          </label>
+          <label><span class="sr-only">Conversación</span><select id="filter-conversation">
+            <option value="">Toda conversación</option>
+          </select></label>
+          <label><span class="sr-only">Estado del portal</span><select id="filter-portal">
+            <option value="">Todo estado del portal</option>
+          </select></label>
+        </div>
+        <div class="filter-tools">
+          <button id="clear-filters-button" class="secondary" type="button">Limpiar filtros</button>
+          <details id="advanced-filters" class="advanced-filters">
+          <summary>Filtros avanzados</summary>
+          <div class="table-filters">
           <div class="search-filter" data-filter="project">
             <label for="filter-project">Proyecto</label>
             <div class="search-filter-field has-date-order"><input id="filter-project" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="filter-project-options" placeholder="Buscar o elegir" autocomplete="off"><button type="button" class="search-filter-toggle" data-filter-toggle="project" aria-label="Mostrar proyectos">⌄</button><button type="button" class="date-sort-button" data-date-order="project" aria-label="Ordenar por fecha desde Proyecto">↓</button></div>
@@ -91,46 +110,70 @@
               <option value="operationsReply">Respuesta de Operaciones</option>
               <option value="checkedAt">Revisión</option>
               <option value="deadline">Plazo</option>
+              <option value="activity">Última actividad</option>
             </select><button type="button" class="date-sort-button" data-date-order="date" aria-label="Ordenar por fecha elegida">↓</button></div></div>
+          </div>
+          </details>
         </div>
+        <div id="active-filters" class="active-filters" aria-label="Filtros aplicados"></div>
         <div class="table-wrap">
           <div class="table-filter-actions">
             <p id="filter-count" class="filter-count" aria-live="polite"></p>
-            <button id="clear-filters-button" class="secondary" type="button">Limpiar filtros</button>
+            <span id="selection-count" class="selection-count" role="status">Seleccioná REQ en la tabla</span>
           </div>
           <div id="req-grid" aria-label="Tabla de REQ monitoreadas"></div>
           <div id="empty-state" class="empty-state" hidden>No hay REQ configuradas.</div>
         </div>
       </section>
-
-      <section class="command-panel" aria-labelledby="settings-title">
-        <div>
-          <p class="eyebrow">CONFIGURACIÓN</p>
-          <h2 id="settings-title">Configuración</h2>
-          <p>El intervalo se aplica al monitor automático sin iniciar una revisión inmediata. Usa 0 para pausarlo.</p>
-        </div>
-        <form id="interval-form" class="inline-form">
-          <label for="interval-minutes">Intervalo automático (minutos)</label>
-          <input id="interval-minutes" name="intervalMinutes" type="number" min="0" max="1440" step="1" required>
-          <button class="secondary" type="submit">Guardar</button>
-        </form>
-      </section>
-
-      <section class="command-panel">
-        <div>
-          <p class="eyebrow">CONSULTA DIRECTA</p>
-          <h2>Revisar una REQ ahora</h2>
-          <p>No la agrega al monitoreo ni envía alertas a Teams.</p>
-        </div>
-        <form id="query-form" class="inline-form">
-          <label class="sr-only" for="query-req">Número de REQ</label>
-          <input id="query-req" name="req" placeholder="REQ000007780445" autocomplete="off" required>
-          <button class="primary" type="submit">Consultar REQ</button>
-        </form>
-      </section>
-
-      <section id="query-result" class="query-result" hidden aria-live="polite"></section>
     </main>
+
+    <dialog id="add-dialog" class="workspace-dialog" aria-labelledby="add-title">
+      <header class="details-dialog-header">
+        <h2 id="add-title">Agregar REQ</h2>
+        <button class="secondary" type="button" commandfor="add-dialog" command="close">Cerrar</button>
+      </header>
+      <form id="add-form" class="add-form">
+        <label for="add-req">Números de REQ</label>
+        <textarea id="add-req" name="reqs" rows="4" placeholder="REQ000007780500, REQ000007780501" aria-describedby="add-req-hint" autocomplete="off" required></textarea>
+        <p id="add-req-hint" class="add-req-hint">Separá varias REQ con comas, espacios o saltos de línea.</p>
+        <div class="dialog-actions"><button class="primary" type="submit">Agregar</button></div>
+      </form>
+    </dialog>
+
+    <dialog id="settings-dialog" class="workspace-dialog command-panel" aria-labelledby="settings-title">
+        <header class="details-dialog-header">
+          <h2 id="settings-title">Configuración del monitoreo</h2>
+          <button class="secondary" type="button" commandfor="settings-dialog" command="close">Cerrar</button>
+        </header>
+        <section class="command-section">
+          <h3>Frecuencia automática</h3>
+          <p>El intervalo se aplica al monitor automático sin iniciar una revisión inmediata. Usa 0 para pausarlo.</p>
+          <form id="interval-form">
+            <label for="interval-minutes">Intervalo automático (minutos)</label>
+            <div class="inline-form"><input id="interval-minutes" name="intervalMinutes" type="number" min="0" max="1440" step="1" required>
+            <button class="primary" type="submit">Guardar</button></div>
+          </form>
+        </section>
+        <section class="command-section">
+          <h3>Horario de ejecución</h3>
+          <p class="schedule-note">Al habilitar fuera de horario, también se ejecutará el monitor automático y podrá enviar alertas a Teams.</p>
+          <button id="outside-hours-button" class="secondary outside-hours-button" type="button" aria-pressed="false" title="Permitir ejecuciones manuales y automáticas fuera del horario laboral" disabled>Habilitar fuera de horario</button>
+        </section>
+    </dialog>
+
+    <dialog id="lookup-dialog" class="workspace-dialog command-panel" aria-labelledby="lookup-title">
+        <header class="details-dialog-header">
+          <h2 id="lookup-title">Consulta directa</h2>
+          <button class="secondary" type="button" commandfor="lookup-dialog" command="close">Cerrar</button>
+        </header>
+        <p>Consultá una REQ sin agregarla al monitoreo ni enviar alertas a Teams.</p>
+        <form id="query-form" class="inline-form">
+          <label for="query-req">Número de REQ</label>
+          <div class="inline-form"><input id="query-req" name="req" placeholder="REQ000007780445" autocomplete="off" required>
+          <button class="primary" type="submit">Consultar REQ</button></div>
+        </form>
+        <section id="query-result" class="query-result" hidden aria-live="polite"></section>
+    </dialog>
 
     <dialog id="create-req-dialog" aria-labelledby="create-req-title">
       <div class="details-dialog-header">
@@ -138,14 +181,19 @@
         <button id="create-req-close" class="secondary" type="button">Cerrar</button>
       </div>
       <div id="create-req-choices">
-        <p>Elegí el tipo de solicitud para ver las instrucciones antes de abrir el portal.</p>
-        <button id="static-analysis-choice" class="creation-choice secondary" type="button">Análisis de código estático</button>
+        <p class="creation-step">Paso 1 de 2 · Tipo de solicitud</p>
+        <p>Elegí una plantilla para preparar la solicitud antes de abrir el portal.</p>
+        <button id="static-analysis-choice" class="creation-choice secondary" type="button">
+          <svg aria-hidden="true" viewBox="0 0 24 24" width="19" height="19" fill="none" stroke="currentColor" stroke-width="1.8"><path d="m8 6-6 6 6 6m8-12 6 6-6 6m-3-14-2 16"/></svg>
+          Análisis de código estático
+        </button>
       </div>
       <div id="static-analysis-guide" hidden>
+        <p class="creation-step">Paso 2 de 2 · Preparar la solicitud</p>
         <div class="creation-guide-heading">
           <button id="create-req-back" class="secondary creation-back" type="button" aria-label="Volver a tipos de solicitud" title="Volver a tipos de solicitud"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg></button>
           <h3>Análisis de código estático</h3>
-          <a class="creation-portal-link" href="https://miasistencia360-dwp.claro.com.co/dwp/app/#/srm/profile/SRGlbtarmdevapPEC4DMPDFU6NEGUJ/srm" target="_blank" rel="noopener noreferrer" aria-label="Abrir formulario en MiAsistencia360" title="Abrir formulario en MiAsistencia360"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 5h6v6m0-6-9 9"/><path d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg></a>
+          <a class="creation-portal-link" href="https://miasistencia360-dwp.claro.com.co/dwp/app/#/srm/profile/SRGlbtarmdevapPEC4DMPDFU6NEGUJ/srm" target="_blank" rel="noopener noreferrer" aria-label="Abrir formulario en MiAsistencia360" title="Abrir formulario en MiAsistencia360"><svg viewBox="0 0 24 24" width="18" height="18" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M13 5h6v6m0-6-9 9"/><path d="M19 13v5a1 1 0 0 1-1 1H6a1 1 0 0 1-1-1V6a1 1 0 0 1 1-1h5"/></svg><span>Abrir formulario</span></a>
         </div>
         <section class="creation-section" aria-labelledby="creation-message-title">
           <div class="creation-section-heading">
@@ -175,11 +223,15 @@ usuario de red:   46075453</pre>
         <section class="creation-section" aria-labelledby="creation-config-title">
           <h4 id="creation-config-title">Parámetros de configuración</h4>
           <p id="creation-config-required" class="creation-required-note">Todos los parámetros son obligatorios.</p>
+          <h5>Clasificación de la solicitud</h5>
           <dl class="creation-config" aria-describedby="creation-config-required">
-            <div><dt>Sede</dt><dd>1 - Trabajo desde Casa</dd></div>
             <div><dt>Tipo de Operación</dt><dd>Transversal</dd></div>
             <div><dt>Servicio</dt><dd>Análisis de código estático Checkmarx</dd></div>
             <div><dt>Tipo de Solicitud</dt><dd>Solicitud análisis de código estático</dd></div>
+          </dl>
+          <h5>Datos del solicitante y del equipo</h5>
+          <dl class="creation-config" aria-describedby="creation-config-required">
+            <div><dt>Sede</dt><dd>1 - Trabajo desde Casa</dd></div>
             <div><dt>Tipo de Cliente</dt><dd>Cliente Interno</dd></div>
             <div><dt>Dirección IP del Equipo</dt><dd>0</dd></div>
             <div><dt>Cantidad de Usuarios que Requieren la Solicitud</dt><dd>1</dd></div>

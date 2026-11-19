@@ -12,11 +12,12 @@ test("dashboard filters, date ordering and blocked visibility preserve monitored
   const browser = await chromium.launch({ headless: true });
   try {
     const page = await browser.newPage();
+    await page.clock.install({ time: new Date("2026-11-15T03:30:00Z") });
     const reqs = ["REQ101", "REQ102", "REQ103"];
     const results = [
-      { req: "REQ101", projectName: "Alpha", microservices: ["payments"], status: "Pending", requestDetails: { requestType: "Static" }, sentAt: "4/11/2026, 4:30 p. m.", checkedAt: "2026-11-12T12:00:00Z", requester: "Ana", comments: [{ author: "Ana", date: "4/11/2026, 3:00 p. m.", isResponse: false }], activeDeadline: { dueAt: "2026-11-20T12:00:00Z" }, conversationStatus: "Pendiente de respuesta" },
-      { req: "REQ102", projectName: "Beta", microservices: ["shipping"], status: "Completed", requestDetails: { requestType: "Validation" }, sentAt: "5/11/2026, 4:30 p. m.", checkedAt: "2026-11-11T12:00:00Z", latestOperationsComment: { author: "Ops", date: "5/11/2026, 2:00 p. m.", text: "Respuesta" }, activeDeadline: { dueAt: "2026-11-25T12:00:00Z" }, conversationStatus: "Finalizada" },
-      { req: "REQ103", projectName: null, microservices: ["payments", "analytics"], status: "Pending", requestDetails: { requestType: "Static" }, sentAt: null, checkedAt: "2026-11-13T12:00:00Z" },
+      { req: "REQ101", projectName: "Alpha", microservices: ["payments"], status: "Pending", requestDetails: { requestType: "Static" }, sentAt: "4/11/2026, 4:30 p. m.", checkedAt: "2026-11-12T12:00:00Z", requester: "Ana", comments: [{ author: "Ana", date: "4/11/2026, 3:00 p. m.", isResponse: false }], activeDeadline: { dueAt: "2026-11-15T12:00:00Z" }, conversationStatus: "Pendiente de respuesta" },
+      { req: "REQ102", projectName: "Beta", microservices: ["shipping"], status: "Completed", requestDetails: { requestType: "Validation" }, sentAt: "5/11/2026, 4:30 p. m.", checkedAt: "2026-11-11T12:00:00Z", latestOperationsComment: { author: "Ops", date: "12/11/2026, 2:00 p. m.", text: "Respuesta" }, activeDeadline: { dueAt: "2026-11-25T12:00:00Z" }, conversationStatus: "Finalizada" },
+      { req: "REQ103", projectName: null, microservices: ["payments", "analytics"], status: "Pending", requestDetails: { requestType: "Static" }, sentAt: null, checkedAt: "2026-11-14T02:30:00Z" }, // Still November 13 in Bogotá.
     ];
     await page.route("http://grid.local/**", (route) => {
       const pathname = new URL(route.request().url()).pathname;
@@ -31,9 +32,54 @@ test("dashboard filters, date ordering and blocked visibility preserve monitored
     await page.goto("http://grid.local/");
     const rows = page.locator("#req-grid .ag-center-cols-container .ag-row:visible");
     const firstRow = page.locator('#req-grid .ag-center-cols-container .ag-row[row-index="0"]');
+    assert.equal(await page.locator("body").evaluate((el) => getComputedStyle(el).fontSize), "15px");
+    assert.equal(await page.locator("#req-grid .ag-header-cell-text").first().evaluate((el) => getComputedStyle(el).fontSize), "14px");
     assert.equal(await page.locator("#filter-blocked").inputValue(), "hide");
     await page.waitForFunction(() => document.querySelector("#filter-count")?.textContent?.includes("2 de 3"));
     assert.doesNotMatch(await rows.allInnerTexts().then((text) => text.join(" ")), /REQ102/);
+    await page.getByRole("button", { name: "Limpiar filtros" }).click();
+    await page.locator("#advanced-filters > summary").click();
+    await page.locator("#filter-blocked").selectOption("all");
+    await page.locator("#advanced-filters > summary").click();
+    await page.waitForFunction(() => document.querySelector("#filter-count")?.textContent?.includes("3 de 3"));
+    const copied: string[] = [];
+    await page.exposeFunction("recordClipboard", (text: string) => { copied.push(text); });
+    await page.evaluate(`Object.defineProperty(navigator, "clipboard", {
+      configurable: true, value: { writeText: (text) => window.recordClipboard(text) },
+    })`);
+    await page.getByRole("button", { name: "Copiar microservicio: payments", exact: true }).press("Enter", { timeout: 2000 });
+    await page.getByRole("button", { name: "Copiar microservicios: payments, analytics", exact: true }).click();
+    await page.getByRole("button", { name: "Copiar REQ101", exact: true }).click();
+    assert.deepEqual(copied, ["payments", "payments, analytics", "REQ101"]);
+    assert.equal(await page.locator('[data-triage="all"] output').innerText(), "3");
+    assert.equal(await page.locator('[data-triage="pending"] output').innerText(), "1");
+    await page.locator('[data-triage="pending"]').click();
+    await page.waitForFunction(() => document.querySelector("#filter-count")?.textContent?.includes("1 de 3"));
+    await page.getByRole("button", { name: "Quitar filtro: Pendientes de respuesta" }).click();
+    assert.equal(await page.locator('[data-triage="recent"] output').innerText(), "1");
+    await page.locator('[data-triage="recent"]').click();
+    await page.waitForFunction(() => document.querySelector("#filter-count")?.textContent?.includes("1 de 3"));
+    assert.match(await firstRow.innerText(), /REQ102/);
+    await page.getByRole("button", { name: "Quitar filtro: Respuesta reciente" }).click();
+    assert.equal(await page.locator('[data-triage="due"] output').innerText(), "1");
+    await page.locator('[data-triage="due"]').click();
+    await page.waitForFunction(() => document.querySelector("#filter-count")?.textContent?.includes("1 de 3"));
+    assert.match(await firstRow.innerText(), /Vence en menos de 24 horas/);
+    assert.equal(await firstRow.locator(".deadline-note.near svg").count(), 1);
+    assert.match(await firstRow.getAttribute("class") ?? "", /\breq-due-soon\b/);
+    await page.getByRole("button", { name: "Quitar filtro: Plazos en riesgo" }).click();
+    assert.equal(await rows.filter({ hasText: "REQ102" }).locator(".deadline-note.near").count(), 0);
+    await page.locator("#filter-search").fill("ship");
+    await page.waitForFunction(() => document.querySelector("#filter-count")?.textContent?.includes("1 de 3"));
+    assert.match(await rows.allInnerTexts().then((text) => text.join(" ")), /REQ102/);
+    await page.getByRole("button", { name: "Quitar filtro: Buscar" }).click();
+    await page.locator("#filter-portal").selectOption("Completed");
+    await page.waitForFunction(() => document.querySelector("#filter-count")?.textContent?.includes("1 de 3"));
+    await page.getByRole("button", { name: "Quitar filtro: Portal" }).click();
+    await page.locator("#filter-conversation").selectOption("Finalizada");
+    await page.waitForFunction(() => document.querySelector("#filter-count")?.textContent?.includes("1 de 3"));
+    await page.getByRole("button", { name: "Quitar filtro: Conversación" }).click();
+    await page.locator("#advanced-filters > summary").click();
     assert.equal(await page.locator("#sort-direction").count(), 0);
     assert.deepEqual(await page.locator("[data-date-order]").evaluateAll((buttons) =>
       buttons.map((button) => (button as HTMLElement).dataset.dateOrder)), ["project", "microservice", "date"]);
@@ -115,7 +161,12 @@ test("dashboard filters, date ordering and blocked visibility preserve monitored
     }
     await page.getByRole("button", { name: "Limpiar filtros" }).click();
     await page.locator("#filter-blocked").selectOption("all");
-    assert.match(await firstRow.innerText(), /REQ102.*Enviado:\s+5\/11\/2026/s);
+    await firstRow.locator("[data-copy=REQ102]").waitFor();
+    assert.match(await firstRow.innerText(), /REQ102/);
+    await firstRow.getByRole("button", { name: "Ver detalles de REQ102" }).click();
+    await page.getByText("Seguimiento y plazos", { exact: true }).click();
+    assert.match(await page.locator("#req-details-dialog").innerText(), /Enviado\s+5\/11\/2026/);
+    await page.keyboard.press("Escape");
     const check = async (selector: string, value: string, expected: string) => {
       await page.locator(selector).fill(value);
       await page.waitForFunction((count) => document.querySelector("#filter-count")?.textContent?.includes(count), expected);
@@ -175,6 +226,30 @@ test("dashboard filters, date ordering and blocked visibility preserve monitored
     const mobileMenu = await page.locator("#filter-project-options").boundingBox();
     assert.ok(mobileMenu && mobileMenu.width <= 390 && mobileMenu.x >= 0 && mobileMenu.x + mobileMenu.width <= 390);
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth), true);
+    await page.getByRole("button", { name: "Tema claro" }).click();
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "light");
+    await page.reload();
+    assert.equal(await page.locator("html").getAttribute("data-theme"), "light");
+    const settings = page.locator("#settings-dialog");
+    const lookup = page.locator("#lookup-dialog");
+    assert.equal(await settings.isVisible(), false, "closed settings must not render behind the workspace");
+    assert.equal(await lookup.isVisible(), false, "closed lookup must not render behind the workspace");
+    await page.getByRole("button", { name: "Agregar REQ" }).click();
+    await page.getByRole("dialog", { name: "Agregar REQ" }).waitFor();
+    await page.keyboard.press("Escape");
+    const gear = page.getByRole("button", { name: "Configuración", exact: true });
+    assert.equal((await gear.innerText()).trim(), "");
+    assert.equal(await gear.locator("svg").count(), 1);
+    assert.equal(await gear.evaluate((button) => button.previousElementSibling?.id), "credentials-button");
+    await gear.press("Enter");
+    await page.getByRole("dialog", { name: "Configuración del monitoreo" }).waitFor();
+    assert.equal(await lookup.isVisible(), false);
+    await page.keyboard.press("Escape");
+    await page.getByRole("button", { name: "Consulta directa" }).click();
+    await page.getByRole("dialog", { name: "Consulta directa" }).waitFor();
+    assert.equal(await settings.isVisible(), false);
+    await page.keyboard.press("Escape");
+    assert.equal(await lookup.isVisible(), false);
   } finally { await browser.close(); }
 });
 
@@ -266,16 +341,17 @@ test("Create REQ shows static-analysis instructions before the portal link", asy
       !!(heading.compareDocumentPosition(document.querySelector("#creation-config-title")) & Node.DOCUMENT_POSITION_FOLLOWING)),
     "message and copy action should appear before the long configuration list");
     const expectedConfiguration = [
-      ["Sede", "1 - Trabajo desde Casa"],
       ["Tipo de Operación", "Transversal"],
       ["Servicio", "Análisis de código estático Checkmarx"],
       ["Tipo de Solicitud", "Solicitud análisis de código estático"],
+      ["Sede", "1 - Trabajo desde Casa"],
       ["Tipo de Cliente", "Cliente Interno"],
       ["Dirección IP del Equipo", "0"],
       ["Cantidad de Usuarios que Requieren la Solicitud", "1"],
     ];
     await dialog.getByText("Todos los parámetros son obligatorios.", { exact: true }).waitFor();
-    assert.equal(await dialog.locator(".creation-config").getAttribute("aria-describedby"), "creation-config-required");
+    assert.deepEqual(await dialog.locator(".creation-config").evaluateAll((groups) =>
+      groups.map((group) => group.getAttribute("aria-describedby"))), ["creation-config-required", "creation-config-required"]);
     assert.deepEqual(await dialog.locator(".creation-config dt").allInnerTexts(),
       expectedConfiguration.map(([label]) => label));
     assert.deepEqual(await dialog.locator(".creation-config dd").allInnerTexts(),
@@ -287,11 +363,13 @@ test("Create REQ shows static-analysis instructions before the portal link", asy
     assert.equal((await back.innerText()).trim(), "", "back button is an icon with an accessible name");
     assert.equal(await back.locator("svg").count(), 1);
     assert.ok(await back.evaluate((button) => button.getBoundingClientRect().width >= 44 && button.getBoundingClientRect().height >= 44));
-    assert.ok(await dialog.locator(".creation-config").evaluate((list) =>
-      list.getBoundingClientRect().height < 560 && list.scrollWidth <= list.clientWidth),
+    assert.ok(await dialog.locator(".creation-config").evaluateAll((lists) =>
+      lists.reduce((height, list) => height + list.getBoundingClientRect().height, 0) < 560 &&
+      lists.every((list) => list.scrollWidth <= list.clientWidth)),
     "configuration should be compact without horizontal overflow on mobile");
     await page.setViewportSize({ width: 1280, height: 900 });
-    assert.ok(await dialog.locator(".creation-config").evaluate((list) => list.getBoundingClientRect().height < 380),
+    assert.ok(await dialog.locator(".creation-config").evaluateAll((lists) =>
+      lists.reduce((height, list) => height + list.getBoundingClientRect().height, 0) < 380),
       "configuration should remain compact on desktop");
     await page.setViewportSize({ width: 390, height: 844 });
     assert.equal(await page.evaluate(() => typeof navigator.clipboard?.writeText), "function");
@@ -374,6 +452,50 @@ test("Operations conversation message fills its card without losing inner quotes
   }
 });
 
+test("stored conversation links and attachments remain safe and use the existing download action", async () => {
+  const browser = await chromium.launch();
+  try {
+    const page = await browser.newPage();
+    const url = "https://portal.invalid/files/report.pdf";
+    const payloads: unknown[] = [];
+    await page.route("http://grid.local/**", (route) => {
+      const pathname = new URL(route.request().url()).pathname;
+      if (pathname === "/api/dashboard") return route.fulfill({ json: {
+        reqs: ["REQ001"], results: [{ req: "REQ001", comments: [{
+          author: "Operations", isResponse: true, text: "See https://example.invalid/notes. <b>plain text</b>\njavascript:alert(1)",
+          attachments: [{ name: "report.pdf", size: "42 KB", url },
+            { name: "invalid.html", url: "javascript:alert(1)" }],
+        }] }], monitor: { running: false }, auth: {}, schedule: { allowed: true },
+      } });
+      if (pathname === "/api/attachments/download") {
+        payloads.push(route.request().postDataJSON());
+        return route.fulfill({ body: "synthetic attachment", contentType: "application/pdf" });
+      }
+      const file = ({ "/": "web/index.html", "/app.js": "dist/app.js", "/styles.css": "web/styles.css",
+        "/ag-grid-community.min.js": "node_modules/ag-grid-community/dist/ag-grid-community.min.js" } as Record<string, string>)[pathname];
+      return file ? route.fulfill({ body: fs.readFileSync(file), contentType: pathname.endsWith(".js") ? "text/javascript" :
+        pathname.endsWith(".css") ? "text/css" : "text/html" }) : route.fulfill({ status: 404 });
+    });
+    await page.goto("http://grid.local/");
+    await page.getByRole("button", { name: "Limpiar filtros" }).click();
+    await page.getByRole("button", { name: "Ver detalles de REQ001" }).click();
+    const dialog = page.getByRole("dialog", { name: "Información de la REQ" });
+    const message = dialog.locator(".operations-message");
+    assert.equal(await message.locator("a").getAttribute("href"), "https://example.invalid/notes");
+    assert.match(await message.innerText(), /<b>plain text<\/b>/);
+    assert.equal(await message.locator("b").count(), 0);
+    await dialog.getByText("Archivos adjuntos (2)", { exact: true }).click();
+    const files = dialog.locator("details[open]");
+    assert.match(await files.innerText(), /report\.pdf\s+42 KB/);
+    assert.equal(await files.getByRole("button").count(), 1, "invalid URLs are displayed without a download action");
+    const [download] = await Promise.all([page.waitForEvent("download"), files.getByRole("button").click()]);
+    assert.equal(download.suggestedFilename(), "report.pdf");
+    assert.deepEqual(payloads, [{ url }]);
+  } finally {
+    await browser.close();
+  }
+});
+
 test("unlocked Operations replies stay first across date sorts, filters, and pages", async () => {
   const browser = await chromium.launch({ headless: true });
   try {
@@ -394,6 +516,9 @@ test("unlocked Operations replies stay first across date sorts, filters, and pag
         pathname.endsWith(".css") ? "text/css" : "text/html" }) : route.fulfill({ status: 404, body: "" });
     });
     await page.goto("http://grid.local/");
+    await page.getByRole("button", { name: "Limpiar filtros" }).click();
+    await page.locator("#advanced-filters > summary").click();
+    await page.locator("#filter-blocked").selectOption("hide");
     await page.waitForFunction(() => document.querySelector("#filter-count")?.textContent?.includes("11 de 12"));
     const visibleReqs = () => page.locator("#req-grid .ag-center-cols-container .ag-row:visible").evaluateAll((rows) =>
       rows.map((row) => ({ index: Number(row.getAttribute("row-index")), req: row.querySelector(".req-copy")?.textContent?.trim() }))
@@ -402,8 +527,10 @@ test("unlocked Operations replies stay first across date sorts, filters, and pag
     await page.getByRole("button", { name: "Next Page" }).click();
     assert.deepEqual(await visibleReqs(), ["REQ003"], "replies occupy the first page before pagination");
     await page.getByRole("button", { name: "Previous Page" }).click();
+    await page.waitForFunction(() => document.querySelector("#req-grid .ag-paging-row-summary-panel")?.textContent?.includes("1 a 10"));
     await page.locator("#filter-blocked").selectOption("all");
     await page.waitForFunction(() => document.querySelector("#filter-count")?.textContent?.includes("12 de 12"));
+    await page.locator('#req-grid .ag-center-cols-container .ag-row[row-index="2"] .req-copy').waitFor();
     assert.deepEqual((await visibleReqs()).slice(0, 2), ["REQ002", "REQ001"],
       "a locked reply must not be promoted");
     assert.equal((await visibleReqs())[2], "REQ012", "non-priority rows retain the selected date order");
@@ -411,7 +538,7 @@ test("unlocked Operations replies stay first across date sorts, filters, and pag
     await page.waitForFunction(() => document.querySelector('#req-grid .ag-center-cols-container .ag-row[row-index="0"]')?.textContent?.includes("REQ001"));
     assert.deepEqual((await visibleReqs()).slice(0, 2), ["REQ001", "REQ002"],
       "ascending date changes order within the priority group");
-    await page.locator('#req-grid .ag-header-cell-text').filter({ hasText: "Proyecto / Microservicio / REQ" }).click();
+    await page.locator('#req-grid .ag-header-cell-text').filter({ hasText: "REQ / Microservicio" }).click();
     assert.deepEqual((await visibleReqs()).slice(0, 2), ["REQ001", "REQ002"],
       "column sorting must also keep unlocked replies first");
     await page.locator("#filter-req").fill("REQ011");
@@ -450,17 +577,18 @@ test("AG Grid sorts and pages REQs without losing row actions or literal status"
     await page.locator("#req-grid .ag-center-cols-container .ag-row").first().waitFor();
     assert.match(await page.locator("#req-grid .ag-paging-row-summary-panel").innerText(), /1 a 10 de 13/);
     assert.equal(await page.locator('#req-grid .ag-header-cell[col-id="detail"]').count(), 0);
-    await page.locator("#req-grid .ag-header-cell-text", { hasText: "Proyecto / Microservicio / REQ" }).click();
+    await page.locator("#req-grid .ag-header-cell-text", { hasText: "REQ / Microservicio" }).click();
     await page.locator("#req-grid").getByText("REQ001", { exact: true }).first().waitFor();
-    assert.equal(await page.locator('#req-grid .ag-row', { hasText: "REQ001" }).locator('.req-identity .req-title').innerText(), "Synthetic 1");
+    assert.equal(await page.locator('#req-grid .ag-row', { hasText: "REQ001" }).locator('.req-identity .req-service').innerText(), "Synthetic 1");
     assert.equal(await page.locator("#req-grid .portal-status.warning").count(), 1);
-    assert.equal(await page.locator("#req-grid .requester-replied").count(), 1);
-    assert.equal(await page.locator("#req-grid .requester-replied").innerText(), "Ya respondiste");
-    assert.match(await page.locator("#req-grid .ag-row", { has: page.locator(".portal-status.warning") })
-      .locator(".conversation-status").innerText(), /Respondida/);
+    const pendingPortalRow = page.locator("#req-grid .ag-row", { has: page.locator(".portal-status.warning") });
+    assert.equal(await pendingPortalRow.locator(".conversation-status").innerText(), "Ya respondiste");
+    assert.equal(await pendingPortalRow.locator('[col-id="conversationStatus"]').innerText(), "Ya respondiste");
     await page.locator("#req-grid [data-details=REQ001]").click();
     assert.equal(await page.locator("#req-grid [data-details=REQ001] span").count(), 0);
     await page.locator("#req-details-dialog[open]").waitFor();
+    assert.equal(await page.locator("#req-details-dialog").evaluate((dialog) => Math.round(dialog.getBoundingClientRect().right)), 1280);
+    await page.getByText("Descripción e instrucciones", { exact: true }).click();
     await page.getByText("Synthetic details", { exact: true }).waitFor();
     assert.equal(await page.locator("#req-grid [data-query=REQ001]").count(), 1);
     assert.equal(await page.locator("#req-grid [data-delete=REQ001]").count(), 1);
@@ -476,7 +604,8 @@ test("AG Grid sorts and pages REQs without losing row actions or literal status"
       container.scrollLeft = container.scrollWidth;
       return { available: container.scrollWidth > container.clientWidth, moved: container.scrollLeft > 0 };
     });
-    assert.equal(mobileScroll.available && mobileScroll.moved, true, "columns must remain reachable by horizontal scrolling");
+    assert.equal(mobileScroll.available, false, "mobile rows adapt instead of forcing a horizontal scroll");
+    assert.equal(await page.locator(".compact-row-meta").first().isVisible(), true);
     await page.setViewportSize({ width: 1280, height: 800 });
     assert.equal(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth), true);
     const completed = { startedAt: "run-1", running: false, finishedAt: "2026-11-05T15:00:00Z", exitCode: 0 };
@@ -525,14 +654,17 @@ test("query arrows and monitor buttons show busy feedback until their work finis
         pathname.endsWith(".css") ? "text/css" : "text/html" }) : route.fulfill({ status: 404, body: "" });
     });
     await page.goto("http://grid.local/");
+    await page.getByRole("button", { name: "Limpiar filtros" }).click();
+    await page.getByRole("button", { name: "Más acciones para REQ001" }).click();
     const query = page.locator("#req-grid [data-query=REQ001]");
     await query.click();
     await page.waitForFunction(() => Boolean(document.querySelector("#req-grid [data-query=REQ001][aria-busy=true]")));
-    assert.equal(await query.locator("svg").evaluate((icon) => getComputedStyle(icon).animationName), "spin");
+    assert.equal(await page.locator("#query-form button").getAttribute("aria-busy"), "true");
     await page.emulateMedia({ reducedMotion: "reduce" });
-    assert.equal(await query.locator("svg").evaluate((icon) => getComputedStyle(icon).animationName), "none");
+    assert.equal(await page.locator("#query-form button").evaluate((button) => getComputedStyle(button, "::after").animationDuration), "1e-05s");
     finishQuery?.();
     await page.waitForFunction(() => !document.querySelector("#req-grid [data-query=REQ001][aria-busy=true]"));
+    await page.keyboard.press("Escape");
 
     const run = page.locator("#run-all-button");
     await run.click();
@@ -597,7 +729,7 @@ test("the served AG Grid keeps columns aligned under the application's CSP", asy
       const rect = cell.getBoundingClientRect();
       return { left: rect.left, top: rect.top, position: getComputedStyle(cell).position };
     }));
-    assert.equal(positions.length, 4, "center columns exclude the pinned selection cell and removed Detail column");
+    assert.equal(positions.length, 6, "center columns separate conversation, portal, deadline and activity");
     assert.ok(positions.every((cell) => cell.position === "absolute" && cell.top === positions[0].top));
     assert.ok(positions[1].left > positions[0].left, "columns must be beside each other, not stacked");
     assert.equal(await page.locator("#req-grid style:not([nonce])").count(), 0);

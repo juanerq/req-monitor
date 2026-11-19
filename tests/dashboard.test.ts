@@ -121,7 +121,9 @@ test("REQ table uses AG Grid Community for sorting, column filtering and paginat
   assert.equal(options.pagination, true);
   assert.equal((options.defaultColDef as { sortable: boolean; filter: boolean }).sortable, true);
   assert.equal((options.defaultColDef as { sortable: boolean; filter: boolean }).filter, true);
-  assert.ok((options.columnDefs as { headerName: string }[]).some((column) => column.headerName === "Estado y conversación"));
+  assert.deepEqual(Array.from((options.columnDefs as { headerName: string; hide?: boolean }[])
+    .filter((column) => !column.hide).map((column) => column.headerName)),
+  ["REQ / Microservicio", "Conversación", "Portal", "Plazo", "Última actividad", "Acciones"]);
 });
 
 test("dashboard refresh repaints changed microservice names when the REQ column value stays the same", () => {
@@ -164,7 +166,9 @@ test("dashboard refresh repaints changed microservice names when the REQ column 
   render(["AlphaApi,BetaApi", "GammaApi"]);
   assert.match(list.innerHTML, /AlphaApi, BetaApi, GammaApi/);
   assert.doesNotMatch(list.innerHTML, /OldService/);
-  assert.deepEqual(JSON.parse(JSON.stringify(refreshes.at(-1))), { force: true, columns: ["req", "actions"] });
+  assert.deepEqual(JSON.parse(JSON.stringify(refreshes.at(-1))), {
+    force: true, columns: ["req", "conversationStatus", "status", "deadline", "activity", "actions"],
+  });
   const css = fs.readFileSync("web/styles.css", "utf8");
   assert.match(css, /\.req-service\s*\{[^}]*white-space:\s*normal;[^}]*overflow-wrap:\s*anywhere;/);
 });
@@ -186,7 +190,7 @@ test("dashboard remains usable when the AG Grid asset cannot load", () => {
 
 test("monitored table labels the stated deadline without claiming verified closure", () => {
   const source = frontendSource();
-  assert.match(source, /headerName: "Plazo y actividad"/);
+  assert.match(source, /headerName: "Plazo"/);
   const list = { innerHTML: "" };
   const empty = { hidden: false };
   const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : selector === "#empty-state" ? empty : {} };
@@ -197,14 +201,14 @@ test("monitored table labels the stated deadline without claiming verified closu
     (context as { renderRowsForTest: (reqs: string[], results: object[]) => void }).renderRowsForTest(["REQ123"], [{ req: "REQ123", ...result }]);
     return list.innerHTML;
   };
-  assert.match(render({ conversationStatus: "Pendiente de respuesta", activeDeadline: { dueAt: "2026-10-10T04:59:00.000Z", sourceKey: "cycle" } }), /Plazo indicado<\/span><span class="req-review-date">2026-10-09 23:59<\/span>/);
+  assert.match(render({ conversationStatus: "Pendiente de respuesta", activeDeadline: { dueAt: "2026-10-10T04:59:00.000Z", sourceKey: "cycle" } }), /class="req-review-date"[^>]*>2026-10-09 23:59<\/span>/);
   assert.match(render({ conversationStatus: "Pendiente de respuesta", activeDeadline: null }), /Sin plazo indicado/);
   assert.match(render({ conversationStatus: "Respondida", activeDeadline: null,
-     statedDeadlineDate: "2026-11-12", deadlineOrderKnown: false }), /Plazo indicado<\/span><span class="req-review-date">2026-11-12<\/span>/);
+     statedDeadlineDate: "2026-11-12", deadlineOrderKnown: false }), /class="req-review-date"[^>]*>2026-11-12<\/span>/);
   assert.match(list.innerHTML, /Fecha indicada ya pasó · vigencia sin confirmar/);
   assert.doesNotMatch(list.innerHTML, /23:59/);
   assert.match(render({ conversationStatus: "Pendiente de respuesta", activeDeadline: null,
-     statedDeadlineDate: "2026-11-12", deadlineOrderKnown: true }), /Plazo indicado<\/span><span class="req-review-date">2026-11-12<\/span>/);
+     statedDeadlineDate: "2026-11-12", deadlineOrderKnown: true }), /class="req-review-date"[^>]*>2026-11-12<\/span>/);
   assert.match(render({ conversationStatus: "Respondida", activeDeadline: null,
     statedDeadlineDate: "2026-11-12", deadlineOrderKnown: true }), /Plazo inactivo/);
   assert.match(render({ conversationStatus: "Respondida", activeDeadline: { dueAt: "2026-10-10T04:59:00.000Z" } }), /Plazo inactivo/);
@@ -234,12 +238,12 @@ test("table shows the latest requester reply time only when its order is establi
   const ops = { author: "Operations", date: "10 nov 2026, 12:00", isResponse: true };
   const early = { author: "ANA PEREZ", date: "9 nov 2026, 18:02", isResponse: false };
   const latest = { author: "Ana Pérez", date: "11 nov 2026, 09:35", isResponse: false };
-  assert.match(render([latest, ops, early]), /Última respuesta del usuario<\/span><span class="req-reply-value">2026-11-11 09:35<\/span>/);
+  assert.match(render([latest, ops, early]), />2026-11-11 09:35<\/span>\s*<span class="activity-author"[^>]*>Ana Pérez<\/span>/);
   assert.match(render([{ ...latest, date: "4/11/2026, 8:19 p.\u00a0m." },
-     { ...early, date: "3/11/2026, 11:02 p. m." }]), /Última respuesta del usuario<\/span><span class="req-reply-value">2026-11-04 20:19<\/span>/);
-  assert.match(render([latest, { ...early, date: null }]), /Última respuesta del usuario<\/span><span class="req-reply-value">Fecha no disponible<\/span>/);
-  assert.match(render([ops]), /Última respuesta del usuario<\/span><span class="req-reply-value">Sin respuesta registrada<\/span>/);
-  assert.match(render([{ ...ops, isResponse: false }], ""), /Última respuesta del usuario<\/span><span class="req-reply-value">Fecha no disponible<\/span>/);
+     { ...early, date: "3/11/2026, 11:02 p. m." }]), />2026-11-04 20:19<\/span>/);
+  assert.match(render([latest, { ...early, date: null }]), /Sin respuesta con fecha/);
+  assert.match(render([ops]), /Sin respuesta con fecha/);
+  assert.match(render([{ ...ops, isResponse: false }], ""), /Sin respuesta con fecha/);
 });
 
 test("activity shows the last Operations reply instead of per-REQ review time", () => {
@@ -253,11 +257,11 @@ test("activity shows the last Operations reply instead of per-REQ review time", 
     return list.innerHTML;
   };
   const html = render({ latestOperationsComment: { author: "Operations", date: "9 nov 2026, 18:02" } });
-  assert.match(html, /Última respuesta de Operaciones<\/span><span[^>]*>2026-11-09 18:02<\/span>/);
+  assert.match(html, />2026-11-09 18:02<\/span>\s*<span class="activity-author"[^>]*>Operations<\/span>/);
   assert.doesNotMatch(html, /Última revisión|2026-11-13 16:00/);
   assert.match(render({ latestOperationsComment: { date: "4\/11\/2026, 8:19 p. m." } }), /2026-11-04 20:19/);
-  assert.match(render({ latestOperationsComment: { date: null } }), /Última respuesta de Operaciones<\/span><span[^>]*>Fecha no disponible<\/span>/);
-  assert.match(render({}), /Última respuesta de Operaciones<\/span><span[^>]*>Sin respuesta registrada<\/span>/);
+  assert.match(render({ latestOperationsComment: { date: null } }), /Sin respuesta con fecha/);
+  assert.match(render({}), /Sin respuesta con fecha/);
 });
 
 test("monitor header keeps its last review globally visible outside schedule", () => {
@@ -292,15 +296,14 @@ test("table leads with the Operations reply and marks only confirmed timed deadl
     latestOperationsComment: { author: "Operations", date: "9 nov 2026, 18:02", text: "Please reply" },
     activeDeadline: { dueAt: near, sourceKey: "cycle" } };
   const html = render(timed);
-  assert.ok(html.indexOf("Operaciones respondió") < html.indexOf("Portal: Pendiente"));
-  assert.ok(html.indexOf("Conversación") < html.indexOf("Portal: Pendiente"));
-  assert.ok(html.indexOf('class="status-stack"') < html.indexOf('class="req-review"'));
+  assert.match(html, /Te toca responder[\s\S]*portal-status warning/);
+  assert.ok(html.indexOf("portal-status warning") < html.indexOf('class="req-review-date"'));
   assert.ok(html.indexOf('class="req-title"') < html.indexOf('class="status-stack"'));
   assert.match(html, /Vence en menos de 24 horas/);
-  assert.match(html, /class="badge deadline-near"/);
+  assert.match(html, /class="deadline-note near"/);
   assert.doesNotMatch(render({ ...timed, activeDeadline: { dueAt: later, sourceKey: "cycle" } }), /Vence en menos de 24 horas/);
   const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
-  assert.match(render({ ...timed, activeDeadline: { dueAt: past, sourceKey: "cycle" } }), /class="badge deadline-overdue">Plazo vencido<\/span>/);
+  assert.match(render({ ...timed, activeDeadline: { dueAt: past, sourceKey: "cycle" } }), /class="deadline-note overdue"[^>]*>Plazo vencido<\/span>/);
   assert.doesNotMatch(render({ ...timed, conversationStatus: "Respondida", activeDeadline: { dueAt: past, sourceKey: "cycle" } }), /Plazo vencido/);
   assert.doesNotMatch(render({ ...timed, activeDeadline: null, statedDeadlineDate: "2026-11-12", deadlineOrderKnown: false }), /Plazo vencido/);
   assert.doesNotMatch(render({ ...timed, activeDeadline: null, statedDeadlineDate: "2099-01-01", deadlineOrderKnown: false }), /Fecha indicada ya pasó/);
@@ -698,7 +701,7 @@ function dashboardHarness() {
 
 test("portal status is literal, independent of conversation status and unavailable when absent", () => {
   const ui = dashboardHarness();
-  assert.match(frontendSource(), /headerName: "Estado y conversación"/);
+  assert.match(frontendSource(), /headerName: "Portal"/);
   ui.render({ status: "Asignado por mesa", conversationStatus: "Pendiente de respuesta", microservices: ["servicio-a"], title: "Resumen" });
   assert.match(ui.list.innerHTML, /Asignado por mesa/);
   assert.doesNotMatch(ui.list.innerHTML, /<span class="badge[^>]*>Pendiente de respuesta/);
@@ -713,17 +716,27 @@ test("table exposes conversation state and Operations reply without replacing th
   ui.render({ status: "Pendiente", conversationStatus: "Respondida", latestOperationsComment: {
     author: "Operations", date: null, text: "Please review", attachments: [],
   } });
-  assert.match(ui.list.innerHTML, /class="badge portal-status warning"[^>]*>Portal: Pendiente<\/span>/);
-  assert.match(ui.list.innerHTML, /Conversación<\/span><span class="conversation-status">Respondida<\/span>/);
-  assert.match(ui.list.innerHTML, /Ya respondiste/);
+  assert.match(ui.list.innerHTML, /class="badge portal-status warning"[^>]*>Pendiente<\/span>/);
+  assert.match(ui.list.innerHTML, /class="conversation-status answered"[^>]*>Ya respondiste<\/span>/);
+  assert.doesNotMatch(ui.list.innerHTML, />Respondida<\/span>/);
   assert.doesNotMatch(ui.list.innerHTML, /Operaciones respondió/);
   ui.render({ status: "Pendiente", conversationStatus: "Pendiente de respuesta", latestOperationsComment: {
     author: "Operations", date: null, text: "Please review", attachments: [],
   } });
-  assert.match(ui.list.innerHTML, /Operaciones respondió/);
+  assert.match(ui.list.innerHTML, /class="conversation-status pending"[^>]*>Te toca responder<\/span>/);
+  assert.doesNotMatch(ui.list.innerHTML, />Pendiente de respuesta<\/span>|Operaciones respondió/);
   assert.doesNotMatch(ui.list.innerHTML, /Ya respondiste/);
+  ui.render({ status: "Pendiente", conversationStatus: "Pendiente de respuesta" });
+  assert.match(ui.list.innerHTML, />Pendiente de respuesta<\/span>/);
+  assert.doesNotMatch(ui.list.innerHTML, /Te toca responder/);
+  ui.render({ status: "Pendiente", conversationStatus: "Pendiente de respuesta",
+    latestOperationsComment: { author: "Operations", date: null, text: "Please review" },
+    comments: [{ date: null }, { date: "19 nov 2026, 18:02" }],
+  });
+  assert.match(ui.list.innerHTML, /Orden de mensajes sin confirmar/);
+  assert.doesNotMatch(ui.list.innerHTML, /Te toca responder/);
   ui.render({ status: "Asignada", conversationStatus: "<script>", latestOperationsComment: null });
-  assert.match(ui.list.innerHTML, /Conversación<\/span><span class="conversation-status">&lt;script&gt;<\/span>/);
+  assert.match(ui.list.innerHTML, /class="conversation-status[^"]*"[^>]*>&lt;script&gt;<\/span>/);
   assert.doesNotMatch(ui.list.innerHTML, /Operaciones respondió/);
 });
 
@@ -744,12 +757,12 @@ test("portal status badges retain literal text with distinct, safe color classes
     ["Finalizada", "success"], ["Rechazada", "danger"],
   ]) {
     ui.render({ status, conversationStatus: "Pendiente de respuesta" });
-    assert.match(ui.list.innerHTML, new RegExp(`class="badge portal-status ${tone}"[^>]*>Portal: ${status}<`));
+    assert.match(ui.list.innerHTML, new RegExp(`class="badge portal-status ${tone}"[^>]*>${status}<`));
   }
   ui.render({ status: "Other <status>" });
-  assert.match(ui.list.innerHTML, /class="badge portal-status neutral"[^>]*>Portal: Other &lt;status&gt;<\/span>/);
+  assert.match(ui.list.innerHTML, /class="badge portal-status neutral"[^>]*>Other &lt;status&gt;<\/span>/);
   ui.render({ status: null });
-  assert.match(ui.list.innerHTML, /class="badge portal-status unavailable"[^>]*>Portal: Estado no disponible<\/span>/);
+  assert.match(ui.list.innerHTML, /class="badge portal-status unavailable"[^>]*>Estado no disponible<\/span>/);
   const css = fs.readFileSync("web/styles.css", "utf8");
   for (const tone of ["warning", "info", "success", "danger", "neutral", "unavailable"]) {
     assert.match(css, new RegExp(`\\.portal-status\\.${tone}\\s*\\{`));
@@ -759,10 +772,10 @@ test("portal status badges retain literal text with distinct, safe color classes
 test("dashboard distinguishes a closed ticket from its approval outcome", () => {
   const ui = dashboardHarness();
   ui.render({ status: "Finalizado", conversationStatus: "Finalizada", closureOutcome: "needs_correction" });
-  assert.match(ui.list.innerHTML, /portal-status warning[^>]*>Portal: Finalizado/);
+  assert.match(ui.list.innerHTML, /portal-status warning[^>]*>Finalizado/);
   assert.match(ui.list.innerHTML, /Cerrada con observaciones/);
   ui.render({ status: "Finalizado", conversationStatus: "Finalizada", closureOutcome: "unknown" });
-  assert.match(ui.list.innerHTML, /portal-status neutral[^>]*>Portal: Finalizado/);
+  assert.match(ui.list.innerHTML, /portal-status neutral[^>]*>Finalizado/);
   assert.match(ui.list.innerHTML, /Cierre sin resultado claro/);
   ui.renderQuery({ status: "Finalizado", conversationStatus: "Finalizada", closureOutcome: "approved" });
   assert.match(ui.query.innerHTML, /Resultado del cierre \(calculado\)/);
@@ -808,8 +821,8 @@ test("details open in a separate dialog without compressing the grid cell", () =
 test("request title appears below its REQ without a separate Detail column", () => {
   const ui = dashboardHarness();
   ui.render({ title: "Short <request>" });
-  assert.match(ui.list.innerHTML, /data-copy="REQ123"[^>]*>REQ123<\/button><\/div><span class="req-title">Short &lt;request&gt;<\/span>/);
-  assert.doesNotMatch(ui.list.innerHTML, /class="req-title"[^>]*>Short <request>/);
+  assert.match(ui.list.innerHTML, /data-copy="REQ123"[^>]*>REQ123<\/button><\/div><span class="req-service"[^>]*>Short &lt;request&gt;<\/span>/);
+  assert.doesNotMatch(ui.list.innerHTML, /class="req-service"[^>]*>Short <request>/);
   const context = vm.createContext({ document: { querySelector: () => ({}) }, URL, console });
   vm.runInContext(`${frontendSource().split('elements.credentialsButton.addEventListener')[0]}\nthis.columnsForTest = gridOptions.columnDefs;`, context);
   const columns = (context as { columnsForTest: { field?: string; filterValueGetter?: (params: { data: object }) => string }[] }).columnsForTest;
@@ -922,7 +935,7 @@ test("missing values stay unavailable and stored text and links cannot inject ma
 
 test("observed project appears beside microservice and REQ and in accessible stored details", () => {
   const ui = dashboardHarness();
-  assert.match(frontendSource(), /headerName: "Proyecto \/ Microservicio \/ REQ"/);
+  assert.match(frontendSource(), /headerName: "REQ \/ Microservicio"/);
   ui.render({ projectName: "Proyecto Sintético", microservices: ["servicio-demo"] });
   assert.match(ui.list.innerHTML, /Proyecto Sintético/);
   assert.match(ui.list.innerHTML, /servicio-demo/);
