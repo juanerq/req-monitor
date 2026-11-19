@@ -1,3 +1,5 @@
+import { operationsReviewerName } from "../operations-reviewer.js";
+
 const document: any = globalThis.document;
 declare const agGrid: any;
 
@@ -5,6 +7,9 @@ type StoredResult = {
   req: string;
   status?: string | null;
   conversationStatus?: string | null;
+  comments?: Array<{ author?: string | null; date?: string | null; text?: string | null;
+    attachments?: Array<{ name?: string | null }> | null }> | null;
+  closureOutcome?: "approved" | "needs_correction" | "unknown" | null;
   latestOperationsComment?: { author: string; date: string | null; text: string } | null;
   title?: string | null;
   description?: string | null;
@@ -15,6 +20,9 @@ type StoredResult = {
   detailUrl?: string | null;
   error?: string | null;
   activeDeadline?: { dueAt?: string | null } | null;
+  statedDeadlineDate?: string | null;
+  estimatedDeadlineDate?: string | null;
+  deadlineOrderKnown?: boolean;
   requestDetails?: Record<string, string | null> | null;
   requester?: string | null;
   requesterUserId?: string | null;
@@ -28,6 +36,7 @@ type DashboardPayload = {
   reqs: string[];
   results: StoredResult[];
   lockedReqs?: string[];
+  missingTags?: Record<string, string[]>;
   monitor: {
     running: boolean;
     activeTask?: "monitor" | "query" | "auth" | null;
@@ -46,6 +55,7 @@ type DashboardPayload = {
 type DashboardState = {
   dashboard: DashboardPayload | null;
   resultsByReq: Map<string, StoredResult>;
+  missingTags: Record<string, string[]>;
   accessPromptedRun: string | null;
   alertedMonitorRun: string | null;
   outsideHoursSaving: boolean;
@@ -55,6 +65,7 @@ type DashboardState = {
 
 const state: DashboardState = {
   dashboard: null, resultsByReq: new Map<string, StoredResult>(),
+  missingTags: {},
   accessPromptedRun: null, alertedMonitorRun: null,
   outsideHoursSaving: false,
   runRequestPending: false,
@@ -64,6 +75,14 @@ let dashboardRequestSequence = 0;
 let progressPollTimer: number | null = null;
 let toastTimeout: number | null = null;
 let gridApi: any = null;
+const dateSortDirections = new Map<string, "asc" | "desc">();
+let activeDateSortControl = "date";
+
+const MISSING_TAG_OPTIONS = [
+  { id: "documentation_md", label: "Falta MD de documentación" },
+  { id: "logging_standard", label: "Falta estándar de logs" },
+  { id: "consumption_example", label: "Falta ejemplo de consumo" },
+];
 
 const elements = {
   list: document.querySelector("#req-grid"),
@@ -74,7 +93,6 @@ const elements = {
   outsideHours: document.querySelector("#outside-hours-button"),
   intervalForm: document.querySelector("#interval-form"),
   intervalInput: document.querySelector("#interval-minutes"),
-  refresh: document.querySelector("#refresh-button"),
   addForm: document.querySelector("#add-form"),
   queryForm: document.querySelector("#query-form"),
   queryResult: document.querySelector("#query-result"),
@@ -82,6 +100,11 @@ const elements = {
   detailsContent: document.querySelector("#req-details-content"),
   filterCount: document.querySelector("#filter-count"),
   clearFilters: document.querySelector("#clear-filters-button"),
+  tableFilters: Object.fromEntries(["project", "microservice", "req", "type", "status", "blocked"]
+    .map((field) => [field, document.querySelector(`#filter-${field}`)])),
+  filterOptions: Object.fromEntries(["project", "microservice", "req", "type", "status"]
+    .map((field) => [field, document.querySelector(`#filter-${field}-options`)])),
+  sortDate: document.querySelector("#sort-date"),
   liveProgress: document.querySelector("#live-progress"),
   credentialsButton: document.querySelector("#credentials-button"),
   credentialsDialog: document.querySelector("#credentials-dialog"),
@@ -143,16 +166,95 @@ function formatDate(value) {
   return Number.isNaN(date.valueOf()) ? value : date.toLocaleString("es-CO", { dateStyle: "short", timeStyle: "short" });
 }
 
-function statedDeadline(result) {
+function formatActivityDate(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return "Fecha no disponible";
+  const parts = Object.fromEntries(new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/Bogota", year: "numeric", month: "2-digit", day: "2-digit",
+    hour: "2-digit", minute: "2-digit", hourCycle: "h23",
+  }).formatToParts(date).map(({ type, value: part }) => [type, part]));
+  return `${parts.year}-${parts.month}-${parts.day} ${parts.hour}:${parts.minute}`;
+}
+
+function statedDeadline(result, tableDateOnly = false) {
+  if (result?.conversationStatus === "Finalizada") return "Plazo inactivo";
+  const dateOnly = result?.statedDeadlineDate;
+  if (typeof dateOnly === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
+    const [year, month, day] = dateOnly.split("-");
+    if (!result.deadlineOrderKnown) {
+      return tableDateOnly ? dateOnly : `${day}/${month}/${year} (vigencia sin confirmar; sin hora)`;
+    }
+    if (result.conversationStatus === "Pendiente de respuesta" || result.conversationStatus === "En validación") {
+      return tableDateOnly ? dateOnly : `${day}/${month}/${year} (sin hora)`;
+    }
+  }
   if (result && result.conversationStatus !== "Pendiente de respuesta" && result.conversationStatus !== "En validación") {
     return "Plazo inactivo";
   }
   const dueAt = result?.activeDeadline?.dueAt;
-  if (!dueAt || Number.isNaN(new Date(dueAt).valueOf())) return "Sin plazo indicado";
+  if (!dueAt || Number.isNaN(new Date(dueAt).valueOf())) {
+    const estimate = result?.estimatedDeadlineDate;
+    if (typeof estimate === "string" && /^\d{4}-\d{2}-\d{2}$/.test(estimate)) {
+      if (tableDateOnly) return `Estimado: ${estimate} (3 días hábiles)`;
+      const [year, month, day] = estimate.split("-");
+      return `${day}/${month}/${year} (estimado: 3 días hábiles)`;
+    }
+    return "Sin plazo indicado";
+  }
+  if (tableDateOnly) return formatActivityDate(dueAt);
   return new Intl.DateTimeFormat("es-CO", {
     timeZone: "America/Bogota", day: "numeric", month: "numeric", year: "numeric",
-    hour: "numeric", minute: "2-digit", hourCycle: "h12",
+    ...(tableDateOnly ? {} : { hour: "numeric", minute: "2-digit", hourCycle: "h12" }),
   }).format(new Date(dueAt));
+}
+
+function deadlineSignal(result, now = Date.now()) {
+  const dateOnly = result?.statedDeadlineDate;
+  if (result?.deadlineOrderKnown === false && typeof dateOnly === "string" && /^\d{4}-\d{2}-\d{2}$/.test(dateOnly)) {
+    const nextDay = Date.parse(`${dateOnly}T00:00:00-05:00`) + 24 * 60 * 60 * 1000;
+    return Number.isFinite(nextDay) && now >= nextDay ? "date-past-unconfirmed" : null;
+  }
+  if (result?.conversationStatus !== "Pendiente de respuesta") return null;
+  const dueAt = result.activeDeadline?.dueAt;
+  if (!dueAt || !Number.isFinite(Date.parse(dueAt))) return null;
+  const remaining = Date.parse(dueAt) - now;
+  if (remaining <= 0) return "overdue";
+  return remaining <= 24 * 60 * 60 * 1000 ? "near" : null;
+}
+
+function parseCommentTimestamp(value) {
+  const months = { ene: 0, feb: 1, mar: 2, abr: 3, may: 4, jun: 5, jul: 6, ago: 7, sep: 8, oct: 9, nov: 10, dic: 11 };
+  const slash = value?.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4}),\s*(\d{1,2}):(\d{2})\s*([ap])\.\s*m\.$/i);
+  const match = value?.match(/^(\d{1,2})\s+([a-záéíóú]+)\s+(\d{4}),\s*(\d{1,2}):(\d{2})$/i);
+  if (!slash && !match) return null;
+  const month = slash ? Number(slash[2]) - 1 : months[match[2].slice(0, 3).toLowerCase()];
+  const day = Number(slash?.[1] ?? match[1]);
+  const year = Number(slash?.[3] ?? match[3]);
+  const minute = Number(slash?.[5] ?? match[5]);
+  let hour = Number(slash?.[4] ?? match[4]);
+  if (slash) hour = hour % 12 + (slash[6].toLowerCase() === "p" ? 12 : 0);
+  const time = Date.UTC(year, month, day, hour, minute);
+  const parsed = new Date(time);
+  if (month === undefined || month < 0 || month > 11 || parsed.getUTCFullYear() !== year || parsed.getUTCMonth() !== month ||
+    parsed.getUTCDate() !== day || hour > 23 || minute > 59 || (slash && (Number(slash[4]) < 1 || Number(slash[4]) > 12))) return null;
+  return { time, value: `${year}-${String(month + 1).padStart(2, "0")}-${String(day).padStart(2, "0")} ${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}` };
+}
+
+function latestRequesterReplyTime(result) {
+  const comments = Array.isArray(result?.comments) ? result.comments : [];
+  const requester = result?.requester?.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase();
+  if (!requester) return "Fecha no disponible";
+  const replies = comments.filter((comment) => comment?.isResponse === false &&
+    comment.author?.normalize("NFD").replace(/[\u0300-\u036f]/g, "").replace(/\s+/g, " ").trim().toLowerCase() === requester);
+  if (!replies.length) return "Sin respuesta registrada";
+  const dated = replies.map((comment) => parseCommentTimestamp(comment.date));
+  if (dated.some((entry) => !entry)) return "Fecha no disponible";
+  return dated.reduce((latest, entry) => entry.time > latest.time ? entry : latest).value;
+}
+
+function latestOperationsReplyTime(result) {
+  if (!result?.latestOperationsComment) return "Sin respuesta registrada";
+  return parseCommentTimestamp(result.latestOperationsComment.date)?.value ?? "Fecha no disponible";
 }
 
 function normalizeReq(value) {
@@ -250,16 +352,6 @@ async function api<T = unknown>(url: string, options: { method?: string; body?: 
   return body as T;
 }
 
-function updateSummary(reqs, results) {
-  const statuses = new Map(results.map((result) => [result.req, result.conversationStatus]));
-  const count = (status) => reqs.filter((req) => statuses.get(req) === status).length;
-  document.querySelector("#count-total").textContent = reqs.length;
-  document.querySelector("#count-pending").textContent = count("Pendiente de respuesta");
-  document.querySelector("#count-answered").textContent = count("Respondida");
-  document.querySelector("#count-validation").textContent = count("En validación");
-  document.querySelector("#count-finished").textContent = count("Finalizada");
-}
-
 function updateMonitor(monitor, schedule, progress, reqs) {
   const busy = Boolean(monitor.activeTask);
   const label = monitor.activeTask === "query"
@@ -280,11 +372,12 @@ function updateMonitor(monitor, schedule, progress, reqs) {
     ? `Analizadas ${analyzed} de ${runReqs.length}${activeReq ? ` · Ahora: ${activeReq}` : ""}`
     : !busy && schedule && !schedule.allowed
       ? schedule.reason
-      : monitor.finishedAt
-        ? `Última ejecución: ${formatDate(monitor.finishedAt)}`
-        : "Aún sin ejecución registrada";
+      : "";
+  const lastReview = monitor.finishedAt
+    ? `Última revisión del monitor: ${formatActivityDate(monitor.finishedAt)}` : "Aún sin ejecución registrada";
   const timeElement = document.querySelector("#monitor-time");
-  if (timeElement.textContent !== monitorTime) timeElement.textContent = monitorTime;
+  const timeLabel = monitorTime ? `${monitorTime} · ${lastReview}` : lastReview;
+  if (timeElement.textContent !== timeLabel) timeElement.textContent = timeLabel;
   const scheduledAccess = schedule?.allowed !== false;
   document.querySelector("#status-dot").className = `status-dot ${busy ? "running" : scheduledAccess ? "ready" : "off"}`;
   elements.outsideHours.disabled = busy || state.outsideHoursSaving;
@@ -344,6 +437,8 @@ function portalStatusLabel(result) {
 function portalStatusTone(result) {
   const status = result?.status?.trim().toLowerCase();
   if (!status) return "unavailable";
+  if (result?.conversationStatus === "Finalizada" && result?.closureOutcome === "needs_correction") return "warning";
+  if (result?.conversationStatus === "Finalizada" && result?.closureOutcome !== "approved") return "neutral";
   if (/^(pendiente|pending)(\b|$)/.test(status)) return "warning";
   if (/^(rechazad[oa]|rejected|cancelad[oa]|cancelled)(\b|$)/.test(status)) return "danger";
   if (/^(finalizad[oa]|completad[oa]|completed|closed|cerrad[oa])(\b|$)/.test(status)) return "success";
@@ -351,38 +446,159 @@ function portalStatusTone(result) {
   return "neutral";
 }
 
+function closureLabel(result) {
+  if (result?.conversationStatus !== "Finalizada") return null;
+  if (result.closureOutcome === "approved") return "Cierre aprobado";
+  if (result.closureOutcome === "needs_correction") return "Cerrada con observaciones";
+  return "Cierre sin resultado claro";
+}
+
+function closureBadge(result) {
+  const label = closureLabel(result);
+  if (!label) return "";
+  const tone = result.closureOutcome === "approved" ? "success" :
+    result.closureOutcome === "needs_correction" ? "warning" : "neutral";
+  return `<span class="badge closure-outcome ${tone}">${escapeHtml(label)}</span>`;
+}
+
 function updateFilterCount(total, shown) {
   if (elements.filterCount) elements.filterCount.textContent = `Mostrando ${shown} de ${total}`;
+}
+
+function sortTimestamp(value) {
+  if (!value) return 0;
+  const local = parseCommentTimestamp(value);
+  if (local) return local.time;
+  const portalTime = /^\d{4}-\d{2}-\d{2} \d{2}:\d{2}$/.test(value);
+  const iso = portalTime ? Date.parse(`${value.replace(" ", "T")}-05:00`) :
+    /^\d{4}-\d{2}-\d{2}(?:T|$)/.test(value) ? Date.parse(value) : NaN;
+  return Number.isFinite(iso) ? iso : 0;
+}
+
+function compareDateSort(a, b, _first, _second, descending) {
+  if (!a || !b) return a === b ? 0 : (a ? -1 : 1) * (descending ? -1 : 1);
+  return a - b;
+}
+
+const dateSortFields = ["sentAt", "requesterReply", "operationsReply", "checkedAt", "deadline"];
+
+function matchesTableFilters(data) {
+  const filters = elements.tableFilters;
+  const includes = (field, value) => String(value ?? "").toLocaleLowerCase("es-CO")
+    .includes(String(filters[field]?.value ?? "").trim().toLocaleLowerCase("es-CO"));
+  const blocked = filters.blocked?.value;
+  return includes("project", data.project) && includes("microservice", data.microservices) &&
+    includes("req", data.req) && includes("type", data.requestType) && includes("status", data.status) &&
+    (blocked !== "only" || data.locked) && (blocked !== "hide" || !data.locked);
+}
+
+const searchableFilterFields = ["project", "microservice", "req", "type", "status"];
+const searchChoices: Record<string, string[]> = {};
+const visibleSearchChoices: Record<string, string[]> = {};
+let availableFilterRows = [];
+let openSearchField: string | null = null;
+let activeSearchIndex = -1;
+
+function renderSearchOptions(field, query = "") {
+  const list = elements.filterOptions[field];
+  if (!list) return;
+  const matches = (searchChoices[field] ?? []).filter((value) =>
+    value.toLocaleLowerCase("es-CO").includes(query.trim().toLocaleLowerCase("es-CO")));
+  visibleSearchChoices[field] = matches;
+  list.innerHTML = matches.length ? matches.map((value, index) =>
+    `<div id="filter-${field}-option-${index}" role="option" data-index="${index}" aria-selected="${value === elements.tableFilters[field]?.value}">${escapeHtml(value)}</div>`).join("") :
+    '<div class="search-filter-empty">Sin coincidencias</div>';
+}
+
+function closeSearchOptions() {
+  if (!openSearchField) return;
+  const input = elements.tableFilters[openSearchField];
+  elements.filterOptions[openSearchField].hidden = true;
+  input.setAttribute("aria-expanded", "false");
+  input.removeAttribute("aria-activedescendant");
+  openSearchField = null;
+  activeSearchIndex = -1;
+}
+
+function showSearchOptions(field) {
+  if (openSearchField && openSearchField !== field) closeSearchOptions();
+  const input = elements.tableFilters[field];
+  renderSearchOptions(field, input.value);
+  elements.filterOptions[field].hidden = false;
+  input.setAttribute("aria-expanded", "true");
+  openSearchField = field;
+  activeSearchIndex = -1;
+}
+
+function updateFilterOptions(rows) {
+  availableFilterRows = rows;
+  const projectQuery = (elements.tableFilters.project?.value ?? "").trim().toLocaleLowerCase("es-CO");
+  const projectRows = projectQuery ? rows.filter((row) =>
+    row.project.toLocaleLowerCase("es-CO").includes(projectQuery)) : rows;
+  const values: Record<string, string[]> = {
+    project: rows.map((row) => row.project.replace(/ \(inferido\)$/, "")),
+    microservice: projectRows.flatMap((row) => Array.isArray(row.result?.microservices)
+      ? row.result.microservices.filter((name) => typeof name === "string" && name.trim()).map((name) => name.trim()) : []),
+    req: projectRows.map((row) => row.req),
+    type: projectRows.map((row) => row.requestType),
+    status: rows.map((row) => row.status),
+  };
+  for (const [field, options] of Object.entries(values)) {
+    searchChoices[field] = [...new Set(options.filter(Boolean))]
+      .sort((a, b) => a.localeCompare(b, "es-CO", { numeric: true }));
+    renderSearchOptions(field, openSearchField === field ? elements.tableFilters[field].value : "");
+  }
+  if (openSearchField) {
+    activeSearchIndex = -1;
+    elements.tableFilters[openSearchField].removeAttribute("aria-activedescendant");
+  }
 }
 
 const gridOptions = {
   styleNonce: document.querySelector('meta[name="ag-grid-style-nonce"]')?.getAttribute?.("content"),
   theme: typeof agGrid !== "undefined" ? agGrid.themeQuartz.withParams({ browserColorScheme: "dark", accentColor: "#efb64d", backgroundColor: "#111b23", foregroundColor: "#edf4f4" }) : undefined,
+  postSortRows: ({ nodes }) => {
+    let priorityCount = 0;
+    for (let index = 0; index < nodes.length; index++) {
+      if (nodes[index].data?.operationsComment && !nodes[index].data.locked) {
+        nodes.splice(priorityCount, 0, nodes.splice(index, 1)[0]);
+        priorityCount++;
+      }
+    }
+  },
   columnDefs: [
     { headerName: "Proyecto / Microservicio / REQ", field: "req", minWidth: 250, flex: 2, autoHeight: true,
-      filterValueGetter: ({ data }) => data ? [data.req, data.project, data.microservices].join(" ") : "",
+      filterValueGetter: ({ data }) => data ? [data.req, data.project, data.microservices, data.detail].join(" ") : "",
       cellRenderer: ({ data }) => {
         if (!data) return "";
-        return `<div class="req-identity"><span class="req-project">${escapeHtml(data.project)}</span>${data.microservices ? `<span class="req-service">${escapeHtml(data.microservices)}</span>` : ""}<div class="req-id-line"><button class="req-number req-copy" data-copy="${escapeHtml(data.req)}" type="button" aria-label="Copiar ${escapeHtml(data.req)}" title="Copiar número de REQ">${escapeHtml(data.req)}</button></div></div>`;
+        return `<div class="req-identity"><span class="req-project">${escapeHtml(data.project)}</span>${data.microservices ? `<span class="req-service">${escapeHtml(data.microservices)}</span>` : ""}<div class="req-id-line"><button class="req-number req-copy" data-copy="${escapeHtml(data.req)}" type="button" aria-label="Copiar ${escapeHtml(data.req)}" title="Copiar número de REQ">${escapeHtml(data.req)}</button></div><span class="req-title">${escapeHtml(data.detail)}</span>${data.missingTags.length ? `<div class="req-missing-tags">${data.missingTags.map((label) => `<span class="missing-tag">${escapeHtml(label)}</span>`).join("")}</div>` : ""}</div>`;
       } },
-    { headerName: "Estado del portal", field: "status", minWidth: 195, flex: 1, autoHeight: true,
-      cellRenderer: ({ data }) => data ? `<div class="status-stack">
-        <span class="badge portal-status ${portalStatusTone(data.result)}">${escapeHtml(data.status)}</span>
-        <span class="conversation-status">Conversación: ${escapeHtml(data.conversationStatus)}</span>
-        ${data.operationsComment ? '<span class="operations-reply">Respuesta de Operaciones registrada</span>' : ""}
+    { headerName: "Estado y conversación", field: "status", minWidth: 220, flex: 1.2, autoHeight: true,
+       cellRenderer: ({ data }) => data ? `<div class="status-stack">
+        ${data.operationsComment && data.conversationStatus === "Respondida" && !data.operationsOrderUnknown
+          ? '<span class="badge requester-replied">Ya respondiste</span>'
+          : data.operationsComment && data.conversationStatus === "Pendiente de respuesta"
+            ? '<span class="badge operations-reply">Operaciones respondió</span>' : ""}
+        <div class="status-field"><span class="status-field-label">Conversación</span><span class="conversation-status">${data.operationsOrderUnknown ? "Orden de mensajes sin confirmar" : escapeHtml(data.conversationStatus)}</span></div>
+        <div class="status-field status-portal"><span class="status-field-label">Estado del portal</span><span class="badge portal-status ${portalStatusTone(data.result)}">Portal: ${escapeHtml(data.status)}</span></div>
+        ${closureBadge(data.result)}
       </div>` : "" },
-    { headerName: "Detalle", field: "detail", minWidth: 250, flex: 2,
-      cellRenderer: ({ data }) => data ? `<div class="req-title">${escapeHtml(data.detail)}</div>` : "" },
-    { headerName: "Plazo y revisión", field: "checkedAt", minWidth: 310, flex: 1.4, autoHeight: true,
-      sort: "desc", valueGetter: ({ data }) => data?.checkedAt ? Date.parse(data.checkedAt) || 0 : Number.MAX_SAFE_INTEGER,
-      comparator: (a, b) => a - b,
-      filterValueGetter: ({ data }) => data ? [data.deadline, formatDate(data.checkedAt), data.checkedAt, data.progressLabel].join(" ") : "",
-      cellRenderer: ({ data }) => data ? `<div class="req-review">
-        <div class="req-review-line"><span class="req-review-label">Plazo:</span> ${escapeHtml(data.deadline)}</div>
-        <div class="req-review-line"><span class="req-review-label">Última revisión:</span> ${escapeHtml(formatDate(data.checkedAt))}${data.progressLabel
-          ? `<span class="review-indicator ${data.progressClass}" role="img" aria-label="Monitoreo: ${escapeHtml(data.progressLabel)}" title="Monitoreo: ${escapeHtml(data.progressLabel)}"></span>` : ""}</div>
-      </div>` : "" },
-    { headerName: "Acciones", colId: "actions", minWidth: 240, sortable: false, filter: false, autoHeight: true,
+    { headerName: "Plazo y actividad", colId: "sentAt", minWidth: 310, flex: 1.5, autoHeight: true,
+       sort: "desc", valueGetter: ({ data }) => data?.dateSort?.sentAt ?? 0,
+       comparator: compareDateSort,
+         filterValueGetter: ({ data }) => data ? [data.sentAt, data.deadline, data.deadlineSignal === "near" ? "Vence en menos de 24 horas" : data.deadlineSignal === "overdue" ? "Plazo vencido" : data.deadlineSignal === "date-past-unconfirmed" ? "Fecha indicada ya pasó · vigencia sin confirmar" : "", data.requesterReplyTime, data.operationsReplyTime, data.progressLabel].join(" ") : "",
+        cellRenderer: ({ data }) => data ? `<div class="req-review">
+          ${data.deadlineSignal === "near" ? '<span class="badge deadline-near">Vence en menos de 24 horas</span>' : data.deadlineSignal === "overdue" ? '<span class="badge deadline-overdue">Plazo vencido</span>' : ""}
+          ${data.deadlineSignal === "date-past-unconfirmed" ? '<span class="badge deadline-unconfirmed">Fecha indicada ya pasó · vigencia sin confirmar</span>' : ""}
+           <div class="req-review-line"><span class="req-review-label">Enviado:</span><span class="req-review-date">${escapeHtml(data.sentAt)}</span></div>
+           <div class="req-review-line"><span class="req-review-label">${data.result?.estimatedDeadlineDate ? "Plazo estimado" : "Plazo indicado"}</span><span class="req-review-date">${escapeHtml(data.deadline)}</span></div>
+          <div class="req-review-line req-reply"><span class="req-review-label">Última respuesta del usuario</span><span class="req-reply-value">${escapeHtml(data.requesterReplyTime)}</span></div>
+          <div class="req-review-line req-reviewed"><span class="req-review-label">Última respuesta de Operaciones</span><span>${escapeHtml(data.operationsReplyTime)}${data.progressLabel
+           ? `<span class="review-indicator ${data.progressClass}" role="img" aria-label="Monitoreo: ${escapeHtml(data.progressLabel)}" title="Monitoreo: ${escapeHtml(data.progressLabel)}"></span>` : ""}</span></div>
+       </div>` : "" },
+    ...dateSortFields.slice(1).map((field) => ({ colId: field, hide: true, filter: false,
+      valueGetter: ({ data }) => data?.dateSort?.[field] ?? 0, comparator: compareDateSort })),
+    { headerName: "Acciones", colId: "actions", minWidth: 280, sortable: false, filter: false, resizable: false, autoHeight: true,
       cellRenderer: ({ data }) => {
         if (!data) return "";
         const url = data.result?.detailUrl ? safeUrl(data.result.detailUrl) : "#";
@@ -393,12 +609,15 @@ const gridOptions = {
           <button class="secondary icon-action" data-details="${escapeHtml(data.req)}" type="button" aria-label="Ver detalles de ${escapeHtml(data.req)}" title="Ver detalles">${actionIcon("details")}</button>
           <button class="secondary icon-action" data-query="${escapeHtml(data.req)}" type="button" aria-label="Consultar ${escapeHtml(data.req)}" title="Consultar" aria-busy="${state.queryPendingReq === data.req}" ${state.queryPendingReq === data.req ? "disabled" : ""}>${actionIcon("query")}</button>
           ${portal}
-          ${data.result?.status?.trim() === "Finalizado" ? `<button class="secondary icon-action" data-lock="${escapeHtml(data.req)}" data-locked="${data.locked}" type="button" aria-label="${data.locked ? "Desbloquear" : "Bloquear"} ${escapeHtml(data.req)}" title="${data.locked ? "Desbloquear" : "Bloquear"} REQ" ${data.lockActionDisabled ? "disabled" : ""}>${actionIcon(data.locked ? "lock" : "unlock")}</button>` : ""}
+           <button class="secondary icon-action" data-lock="${escapeHtml(data.req)}" data-locked="${data.locked}" type="button" aria-label="${data.locked ? "Desbloquear" : "Bloquear"} ${escapeHtml(data.req)}" title="${data.locked ? "Desbloquear" : "Bloquear"} REQ" ${data.lockActionDisabled ? "disabled" : ""}>${actionIcon(data.locked ? "lock" : "unlock")}</button>
           <button class="danger-button icon-action" data-delete="${escapeHtml(data.req)}" type="button" aria-label="Borrar ${escapeHtml(data.req)}" title="Borrar">${actionIcon("delete")}</button>
         </div>`;
       } },
   ],
   defaultColDef: { sortable: true, filter: true, resizable: true },
+  isExternalFilterPresent: () => Object.values(elements.tableFilters).some((input: any) =>
+    input?.value && input.value !== "all"),
+  doesExternalFilterPass: ({ data }) => Boolean(data && matchesTableFilters(data)),
   rowSelection: { mode: "multiRow", checkboxes: ({ node }) => !node.data?.locked,
     isRowSelectable: (node) => Boolean(node.data && !node.data.locked), headerCheckbox: true,
     selectAll: "all", enableClickSelection: false },
@@ -420,15 +639,10 @@ gridApi = typeof agGrid !== "undefined" && agGrid.createGrid
 
 function updateGridCount() {
   if (!gridApi || !state.dashboard) return;
-  const visibleReqs: string[] = [];
-  const visibleResults: StoredResult[] = [];
+  let shown = 0;
   gridApi.forEachNodeAfterFilter((node) => {
-    if (!node.data) return;
-    visibleReqs.push(node.data.req);
-    if (node.data.result) visibleResults.push(node.data.result);
+    if (node.data) shown++;
   });
-  const shown = visibleReqs.length;
-  updateSummary(visibleReqs, visibleResults);
   updateFilterCount(state.dashboard.reqs.length, shown);
   elements.empty.hidden = state.dashboard.reqs.length > 0 && shown > 0;
   elements.empty.textContent = state.dashboard.reqs.length ? "Sin coincidencias para los filtros aplicados." : "No hay REQ configuradas.";
@@ -436,8 +650,14 @@ function updateGridCount() {
 
 function clearTableFilters() {
   if (!gridApi) return;
+  closeSearchOptions();
+  for (const [field, input] of Object.entries(elements.tableFilters)) {
+    if (input) (input as HTMLInputElement).value = field === "blocked" ? "hide" : "";
+  }
   gridApi.setFilterModel(null);
   gridApi.setGridOption("quickFilterText", "");
+  updateFilterOptions(availableFilterRows);
+  gridApi.onFilterChanged();
 }
 
 function inferredProject(result: StoredResult | null, configuredReqs: string[], byReq: Map<string, StoredResult>): string | null {
@@ -478,19 +698,35 @@ function renderRows(reqs: string[], results: StoredResult[], progress: Dashboard
   }
   const rowData = [...reqs].reverse().map((req) => {
     const result = byReq.get(req) || null;
+    const comments = result?.comments ?? [];
+    const selectedTags = Array.isArray(state.missingTags[req]) ? state.missingTags[req] : [];
     const inferred = inferredProject(result, reqs, byReq);
     const inRun = progress?.startedAt && progress.startedAt === monitor?.startedAt;
     const inScope = !monitor?.selectedReqs || monitor.selectedReqs.includes(req);
     const checked = inRun && inScope ? progress.items?.[req] : null;
     return {
       req, result,
+      missingTags: MISSING_TAG_OPTIONS.filter((option) => selectedTags.includes(option.id)).map((option) => option.label),
       locked: Boolean(state.dashboard?.lockedReqs?.includes(req)),
       lockActionDisabled: Boolean(state.dashboard?.monitor?.activeTask),
       project: result?.projectName?.trim() || (inferred ? `${inferred} (inferido)` : "Proyecto no disponible"),
       microservices: Array.isArray(result?.microservices)
         ? result.microservices.filter(Boolean).join(", ").replace(/,\s*/g, ", ") : "",
       status: portalStatusLabel(result), conversationStatus: result?.conversationStatus || "Sin datos de conversación",
-      operationsComment: Boolean(result?.latestOperationsComment), deadline: statedDeadline(result),
+      operationsComment: Boolean(result?.latestOperationsComment),
+      operationsOrderUnknown: Boolean(result?.latestOperationsComment && comments.length > 1 &&
+        comments.some((comment) => !comment.date)),
+       deadline: statedDeadline(result, true), deadlineSignal: deadlineSignal(result), requesterReplyTime: latestRequesterReplyTime(result),
+       operationsReplyTime: latestOperationsReplyTime(result),
+       sentAt: result?.sentAt || "Fecha no disponible",
+       requestType: result?.requestDetails?.requestType || "Tipo no disponible",
+       dateSort: {
+         sentAt: sortTimestamp(result?.sentAt), requesterReply: sortTimestamp(latestRequesterReplyTime(result)),
+         operationsReply: sortTimestamp(latestOperationsReplyTime(result)),
+         checkedAt: sortTimestamp(result?.checkedAt),
+         deadline: statedDeadline(result, true) === "Plazo inactivo" ? 0 :
+            sortTimestamp(result?.activeDeadline?.dueAt || result?.statedDeadlineDate || result?.estimatedDeadlineDate),
+       },
       detail: webError(result?.error) || result?.title || "Información no disponible",
       checkedAt: result?.checkedAt || null,
       active: Boolean(monitor?.running && checked === "running"),
@@ -500,6 +736,7 @@ function renderRows(reqs: string[], results: StoredResult[], progress: Dashboard
         checked === "error" ? "error" : "waiting",
     };
   });
+  updateFilterOptions(rowData);
   gridApi.setGridOption("rowData", rowData);
   gridApi.refreshCells({ force: true, columns: ["req", "actions"] });
   updateRunSelection();
@@ -510,33 +747,98 @@ function available(value) {
   return value == null || String(value).trim() === "" ? "No disponible" : String(value);
 }
 
+function formatOperationsMessage(value) {
+  let text = String(value).trim();
+  if ((text.startsWith('"') && text.endsWith('"')) ||
+      (text.startsWith("“") && text.endsWith("”")) ||
+      (text.startsWith("«") && text.endsWith("»"))) text = text.slice(1, -1).trim();
+  return text.replace(/\r\n?/g, "\n").replace(/([^\n])\n(?=[^\n])/g, "$1\n\n");
+}
+
+function renderStoredConversation(result) {
+  const comments = Array.isArray(result?.comments)
+    ? result.comments.filter((comment) => comment && typeof comment === "object") : null;
+  return `<section class="details-section details-conversation">
+    <h3>Historial de la conversación</h3>
+    ${comments === null ? `<p class="conversation-empty">Historial no disponible en los datos guardados.</p>`
+      : comments.length === 0 ? `<p class="conversation-empty">No hay comentarios guardados para esta REQ.</p>`
+      : `<ul class="conversation-list">${comments.map((comment) => {
+        const attachments = Array.isArray(comment.attachments) ? comment.attachments : [];
+        return `<li class="conversation-entry">
+          <div class="conversation-entry-header">
+             <strong>${escapeHtml(available(comment.isResponse === true
+               ? operationsReviewerName(comment) : comment.author))}</strong>
+            <span>${escapeHtml(comment.date || "Fecha no disponible")}</span>
+          </div>
+          <p${comment.isResponse === true ? ' class="operations-message"' : ""}>${escapeHtml(comment.isResponse === true
+            ? formatOperationsMessage(available(comment.text)) : available(comment.text))}</p>
+          ${attachments.length ? `<div class="conversation-files"><span>Adjuntos</span><ul>
+            ${attachments.map((attachment) => `<li>${escapeHtml(available(attachment?.name))}</li>`).join("")}
+          </ul></div>` : ""}
+        </li>`;
+      }).join("")}</ul>`}
+  </section>`;
+}
+
 function renderStoredDetails(result) {
   const inferred = inferredProject(result, state.dashboard?.reqs ?? [], state.resultsByReq);
-  const fields = [
+  const statusFields = [
     ["Estado del portal", result?.status],
     ["Estado de conversación (calculado)", result?.conversationStatus],
-    ["Título", result?.title],
+    ...(closureLabel(result) ? [["Resultado del cierre (calculado)", closureLabel(result)]] : []),
+  ];
+  const requestFields = [
     [inferred ? "Proyecto (inferido de otras REQ)" : "Proyecto", result?.projectName?.trim() || inferred],
     ["Microservicios detectados", result?.microservices?.length ? result.microservices.join(", ") : null],
     ["Tipo de operación", result?.requestDetails?.operationType],
     ["Aplicación", result?.requestDetails?.application],
     ["Tipo de solicitud", result?.requestDetails?.requestType],
     ["Tipo de cliente", result?.requestDetails?.clientType],
+  ];
+  const requesterFields = [
     ["Solicitante", result?.requester],
     ["ID de usuario", result?.requesterUserId],
     ["Correo electrónico", result?.requesterEmail],
     ["Teléfono", result?.requesterPhone],
+  ];
+  const trackingFields = [
     ["Enviado", result?.sentAt],
     ["Última actualización", result?.updatedAt],
     ["Última revisión", result?.checkedAt ? formatDate(result.checkedAt) : null],
-    ["Plazo indicado", statedDeadline(result)],
+     [result?.estimatedDeadlineDate ? "Plazo estimado" : "Plazo indicado", statedDeadline(result)],
     ["Error de consulta", webError(result?.error)],
   ];
-  return `<div class="stored-details" aria-label="Detalles de la REQ">
-    <h3>Información guardada de la REQ</h3>
+  const detailsSection = (heading, fields) => `<section class="details-section">
+    <h3>${heading}</h3>
     <dl class="result-grid">${fields.map(([label, value]) => `<div><dt>${escapeHtml(label)}</dt><dd>${escapeHtml(available(value))}</dd></div>`).join("")}</dl>
-    <div class="detail-text"><h4>Descripción detallada de la solicitud</h4><p>${escapeHtml(available(result?.description))}</p></div>
-    <div class="detail-text"><h4>Instrucciones</h4><p>${escapeHtml(available(result?.instructions))}</p></div>
+  </section>`;
+  return `<div class="stored-details" aria-label="Detalles de la REQ">
+    <div class="details-intro">
+      <span class="details-req">${escapeHtml(result.req)}</span>
+      <p class="details-title-label">Título</p>
+      <h3>${escapeHtml(available(result?.title))}</h3>
+    </div>
+    ${detailsSection("Estado", statusFields)}
+    <section class="details-section details-missing-tags">
+      <h3>Faltantes</h3>
+      <p>Marcá únicamente los faltantes confirmados para esta REQ.</p>
+      <form class="missing-tags-form">
+        <div class="missing-tag-options">${MISSING_TAG_OPTIONS.map((option) => `<label class="missing-tag-option">
+          <input type="checkbox" name="missingTag" value="${option.id}" ${state.missingTags[result.req]?.includes(option.id) ? "checked" : ""}>
+          <span>${escapeHtml(option.label)}</span>
+        </label>`).join("")}</div>
+        <button class="secondary" type="submit">Guardar faltantes</button>
+      </form>
+    </section>
+    ${detailsSection("Solicitud", requestFields)}
+    ${detailsSection("Solicitante", requesterFields)}
+    ${detailsSection("Seguimiento", trackingFields)}
+    ${renderStoredConversation(result)}
+    <section class="details-section details-narrative">
+      <h3>Contenido</h3>
+      <div class="detail-text"><h4>Descripción detallada de la solicitud</h4><p>${escapeHtml(available(result?.description))}</p></div>
+      <div class="detail-text"><h4>Instrucciones</h4><p>${escapeHtml(available(result?.instructions))}</p></div>
+    </section>
   </div>`;
 }
 
@@ -544,14 +846,15 @@ function toggleDetails(button) {
   const req = button.dataset.details;
   const result = state.resultsByReq.get(req);
   if (!result) return;
+  elements.detailsDialog.dataset.req = req;
   elements.detailsContent.innerHTML = renderStoredDetails(result);
   elements.detailsDialog.showModal();
 }
 
 function renderDashboard(data: DashboardPayload) {
   state.dashboard = data;
+  state.missingTags = data.missingTags ?? {};
   renderAuthStatus(data.auth);
-  updateSummary(data.reqs, data.results);
   updateMonitor(data.monitor, data.schedule, data.progress, data.reqs);
   const outsideHoursEnabled = data.settings?.allowOutsideHoursRuns === true;
   elements.outsideHours.setAttribute("aria-pressed", String(outsideHoursEnabled));
@@ -650,15 +953,16 @@ function renderQueryResult(result) {
       <dl class="result-grid">
         <div><dt>Estado de conversación (calculado)</dt><dd><span class="badge ${statusClass(result.conversationStatus)}">${escapeHtml(available(result.conversationStatus))}</span></dd></div>
         <div><dt>Estado del portal</dt><dd>${escapeHtml(result.status?.trim() ? result.status : "Estado no disponible")}</dd></div>
+        ${closureLabel(result) ? `<div><dt>Resultado del cierre (calculado)</dt><dd>${closureBadge(result)}</dd></div>` : ""}
         <div><dt>Consultada</dt><dd>${escapeHtml(formatDate(result.checkedAt))}</dd></div>
         <div><dt>Título</dt><dd>${escapeHtml(result.title || "Sin título")}</dd></div>
         <div><dt>Proyecto</dt><dd>${escapeHtml(result.projectName?.trim() ? result.projectName : "Proyecto no disponible")}</dd></div>
         <div><dt>Microservicios</dt><dd>${escapeHtml((result.microservices || []).join(", ") || "No disponibles")}</dd></div>
-        <div><dt>Operaciones</dt><dd>${escapeHtml(comment?.author || "Sin comentario")}</dd></div>
+        <div><dt>Operaciones</dt><dd>${escapeHtml(operationsReviewerName(comment) || "Sin comentario")}</dd></div>
       </dl>
       ${comment?.text ? `<section class="result-comment" aria-label="Último comentario de Operaciones">
         <h3>Último comentario de Operaciones</h3>
-        <p>${escapeHtml(comment.text)}</p>
+         <p>${escapeHtml(formatOperationsMessage(comment.text))}</p>
       </section>` : ""}
       <div class="result-resources">
         <div class="external-links">
@@ -868,6 +1172,28 @@ elements.createReqDialog.addEventListener("close", () => {
 
 document.querySelector("#req-details-close").addEventListener("click", () => elements.detailsDialog.close());
 
+elements.detailsDialog.addEventListener("submit", async (event) => {
+  const form = event.target;
+  if (!form.matches(".missing-tags-form")) return;
+  event.preventDefault();
+  const req = elements.detailsDialog.dataset.req;
+  if (!req) return;
+  const button = form.querySelector('button[type="submit"]');
+  if (button.disabled) return;
+  const tags = [...form.querySelectorAll('input[name="missingTag"]:checked')].map((input) => input.value);
+  button.disabled = true;
+  setLoading(button, true);
+  try {
+    await api(`/api/reqs/${encodeURIComponent(req)}/missing-tags`, {
+      method: "PUT", body: JSON.stringify({ tags }),
+    });
+    elements.detailsDialog.close();
+    await loadDashboard();
+    toast("Faltantes guardados");
+  } catch (error) { toast(errorMessage(error)); }
+  finally { button.disabled = false; setLoading(button, false); }
+});
+
 document.querySelector("#credentials-cancel").addEventListener("click", () => {
   document.querySelector("#credentials-password").value = "";
   elements.credentialsDialog.close();
@@ -1005,6 +1331,100 @@ elements.list.addEventListener("click", async (event) => {
 elements.run.addEventListener("click", () => runManualMonitor(selectedReqs()));
 elements.runAll.addEventListener("click", runAllReqs);
 elements.clearFilters.addEventListener("click", clearTableFilters);
+for (const field of searchableFilterFields) {
+  const input = elements.tableFilters[field];
+  const list = elements.filterOptions[field];
+  input.addEventListener("focus", () => { if (openSearchField !== field) showSearchOptions(field); });
+  input.addEventListener("click", () => { if (openSearchField !== field) showSearchOptions(field); });
+  input.addEventListener("input", () => {
+    if (openSearchField === field) {
+      renderSearchOptions(field, input.value);
+      activeSearchIndex = -1;
+      input.removeAttribute("aria-activedescendant");
+    }
+    if (field === "project") updateFilterOptions(availableFilterRows);
+    gridApi?.onFilterChanged();
+  });
+  input.addEventListener("keydown", (event) => {
+    if (event.key === "Escape") { closeSearchOptions(); return; }
+    if (event.key === "Tab") { closeSearchOptions(); return; }
+    if (event.key !== "ArrowDown" && event.key !== "ArrowUp" && event.key !== "Enter") return;
+    if (openSearchField !== field) showSearchOptions(field);
+    const choices = visibleSearchChoices[field] ?? [];
+    if (!choices.length) return;
+    event.preventDefault();
+    if (event.key === "Enter") {
+      if (activeSearchIndex < 0) return;
+      input.value = choices[activeSearchIndex];
+      closeSearchOptions();
+      if (field === "project") updateFilterOptions(availableFilterRows);
+      gridApi?.onFilterChanged();
+      return;
+    }
+    activeSearchIndex = event.key === "ArrowDown"
+      ? (activeSearchIndex + 1) % choices.length : (activeSearchIndex + choices.length - 1) % choices.length;
+    const option = list.querySelector(`[data-index="${activeSearchIndex}"]`);
+    list.querySelector(".is-active")?.classList.remove("is-active");
+    option.classList.add("is-active");
+    input.setAttribute("aria-activedescendant", option.id);
+    option.scrollIntoView({ block: "nearest" });
+  });
+  list.addEventListener("pointerdown", (event) => {
+    if (event.target.closest("[data-index]")) event.preventDefault();
+  });
+  list.addEventListener("click", (event) => {
+    const option = event.target.closest("[data-index]");
+    if (!option || !list.contains(option)) return;
+    input.value = visibleSearchChoices[field][Number(option.dataset.index)];
+    input.focus({ preventScroll: true });
+    closeSearchOptions();
+    if (field === "project") updateFilterOptions(availableFilterRows);
+    gridApi?.onFilterChanged();
+  });
+  document.querySelector(`[data-filter-toggle="${field}"]`).addEventListener("click", () => {
+    if (openSearchField === field) closeSearchOptions();
+    else {
+      showSearchOptions(field);
+      input.focus({ preventScroll: true });
+    }
+  });
+}
+elements.tableFilters.blocked.addEventListener("change", () => gridApi?.onFilterChanged());
+document.addEventListener("pointerdown", (event) => {
+  if (openSearchField && !event.target.closest(`.search-filter[data-filter="${openSearchField}"]`)) closeSearchOptions();
+});
+function updateDateSort() {
+  updateDateSortButtons();
+  if (!gridApi) return;
+  const field = elements.sortDate.value;
+  if (!dateSortFields.includes(field)) return;
+  gridApi.applyColumnState({ state: [{ colId: field, sort: dateSortDirections.get(`${activeDateSortControl}:${field}`) ?? "desc" }],
+    defaultState: { sort: null } });
+}
+const dateSortButtons = Array.from(document.querySelectorAll("[data-date-order]") as NodeListOf<HTMLButtonElement>);
+function updateDateSortButtons() {
+  const date = elements.sortDate.selectedOptions?.[0]?.textContent?.trim() ?? "fecha elegida";
+  const field = elements.sortDate.value;
+  for (const button of dateSortButtons) {
+    const filter = button.closest(".search-filter, .filter-sort-control")?.querySelector("label")?.textContent?.trim() ?? "filtro";
+    const direction = dateSortDirections.get(`${button.dataset.dateOrder}:${field}`) ?? "desc";
+    const next = direction === "desc" ? "más antigua primero" : "más reciente primero";
+    button.textContent = direction === "desc" ? "↓" : "↑";
+    button.setAttribute("aria-label", `Ordenar REQ por ${date} desde ${filter}: cambiar a ${next}`);
+    button.title = `Ordenar por ${date}: ${next}`;
+    button.setAttribute("aria-pressed", String(button.dataset.dateOrder === activeDateSortControl));
+  }
+}
+elements.sortDate.addEventListener("change", updateDateSort);
+for (const button of dateSortButtons) button.addEventListener("click", () => {
+  const field = elements.sortDate.value;
+  const control = button.dataset.dateOrder ?? "date";
+  const key = `${control}:${field}`;
+  dateSortDirections.set(key, (dateSortDirections.get(key) ?? "desc") === "desc" ? "asc" : "desc");
+  activeDateSortControl = control;
+  updateDateSort();
+});
+updateDateSortButtons();
 
 elements.outsideHours.addEventListener("click", async () => {
   if (state.outsideHoursSaving) return;
@@ -1027,14 +1447,6 @@ elements.outsideHours.addEventListener("click", async () => {
     elements.outsideHours.disabled = Boolean(state.dashboard?.monitor?.activeTask);
     setLoading(elements.outsideHours, false);
   }
-});
-
-elements.refresh.addEventListener("click", async () => {
-  if (elements.refresh.getAttribute("aria-busy") === "true") return;
-  elements.refresh.disabled = true;
-  setLoading(elements.refresh, true);
-  try { await loadDashboard(); }
-  finally { elements.refresh.disabled = false; setLoading(elements.refresh, false); }
 });
 
 async function start() {

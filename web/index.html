@@ -31,14 +31,6 @@
     </header>
 
     <main>
-      <ul class="summary" aria-label="Resumen de estados">
-        <li><span>Total</span><strong id="count-total">0</strong></li>
-        <li data-tone="danger"><span>Pendientes</span><strong id="count-pending">0</strong></li>
-        <li data-tone="info"><span>Respondidas</span><strong id="count-answered">0</strong></li>
-        <li data-tone="warning"><span>En validación</span><strong id="count-validation">0</strong></li>
-        <li data-tone="success"><span>Finalizadas</span><strong id="count-finished">0</strong></li>
-      </ul>
-
       <section class="list-section">
         <div class="section-heading">
           <div>
@@ -47,7 +39,6 @@
           </div>
           <div class="actions">
             <span id="selection-count" class="selection-count" role="status">Seleccioná REQ en la tabla</span>
-            <button id="refresh-button" class="secondary" type="button">Actualizar</button>
             <button id="outside-hours-button" class="secondary outside-hours-button" type="button" aria-pressed="false" title="Permitir ejecuciones manuales y automáticas fuera del horario laboral" disabled>Habilitar fuera de horario</button>
             <button id="run-button" class="primary" type="button" disabled>Ejecutar monitor</button>
             <button id="run-all-button" class="secondary" type="button" disabled>Ejecutar todas</button>
@@ -65,6 +56,43 @@
         </form>
 
         <div id="live-progress" class="live-progress" role="status" aria-live="polite" hidden></div>
+        <div class="table-filters" role="group" aria-label="Filtros de REQ">
+          <div class="search-filter" data-filter="project">
+            <label for="filter-project">Proyecto</label>
+            <div class="search-filter-field has-date-order"><input id="filter-project" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="filter-project-options" placeholder="Buscar o elegir" autocomplete="off"><button type="button" class="search-filter-toggle" data-filter-toggle="project" aria-label="Mostrar proyectos">⌄</button><button type="button" class="date-sort-button" data-date-order="project" aria-label="Ordenar por fecha desde Proyecto">↓</button></div>
+            <div id="filter-project-options" class="search-filter-options" role="listbox" aria-label="Proyectos disponibles" hidden></div>
+          </div>
+          <div class="search-filter" data-filter="microservice">
+            <label for="filter-microservice">Microservicio</label>
+            <div class="search-filter-field has-date-order"><input id="filter-microservice" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="filter-microservice-options" placeholder="Buscar o elegir" autocomplete="off"><button type="button" class="search-filter-toggle" data-filter-toggle="microservice" aria-label="Mostrar microservicios">⌄</button><button type="button" class="date-sort-button" data-date-order="microservice" aria-label="Ordenar por fecha desde Microservicio">↓</button></div>
+            <div id="filter-microservice-options" class="search-filter-options" role="listbox" aria-label="Microservicios disponibles" hidden></div>
+          </div>
+          <div class="search-filter" data-filter="req">
+            <label for="filter-req">REQ</label>
+            <div class="search-filter-field"><input id="filter-req" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="filter-req-options" placeholder="Buscar o elegir" autocomplete="off"><button type="button" class="search-filter-toggle" data-filter-toggle="req" aria-label="Mostrar REQ">⌄</button></div>
+            <div id="filter-req-options" class="search-filter-options" role="listbox" aria-label="REQ disponibles" hidden></div>
+          </div>
+          <div class="search-filter" data-filter="type">
+            <label for="filter-type">Tipo de REQ</label>
+            <div class="search-filter-field"><input id="filter-type" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="filter-type-options" placeholder="Buscar o elegir" autocomplete="off"><button type="button" class="search-filter-toggle" data-filter-toggle="type" aria-label="Mostrar tipos de REQ">⌄</button></div>
+            <div id="filter-type-options" class="search-filter-options" role="listbox" aria-label="Tipos de REQ disponibles" hidden></div>
+          </div>
+          <div class="search-filter" data-filter="status">
+            <label for="filter-status">Estado del portal</label>
+            <div class="search-filter-field"><input id="filter-status" type="search" role="combobox" aria-autocomplete="list" aria-expanded="false" aria-controls="filter-status-options" placeholder="Buscar o elegir" autocomplete="off"><button type="button" class="search-filter-toggle" data-filter-toggle="status" aria-label="Mostrar estados del portal">⌄</button></div>
+            <div id="filter-status-options" class="search-filter-options" role="listbox" aria-label="Estados del portal disponibles" hidden></div>
+          </div>
+          <div class="filter-sort-control"><label for="filter-blocked">REQ bloqueadas</label><div class="filter-sort-field"><select id="filter-blocked">
+              <option value="all">Todas</option><option value="only">Solo bloqueadas</option><option value="hide" selected>Ocultar bloqueadas</option>
+            </select></div></div>
+          <div class="filter-sort-control"><label for="sort-date">Ordenar por fecha</label><div class="filter-sort-field has-date-order"><select id="sort-date">
+              <option value="sentAt">Enviado (creación)</option>
+              <option value="requesterReply">Respuesta del usuario</option>
+              <option value="operationsReply">Respuesta de Operaciones</option>
+              <option value="checkedAt">Revisión</option>
+              <option value="deadline">Plazo</option>
+            </select><button type="button" class="date-sort-button" data-date-order="date" aria-label="Ordenar por fecha elegida">↓</button></div></div>
+        </div>
         <div class="table-wrap">
           <div class="table-filter-actions">
             <p id="filter-count" class="filter-count" aria-live="polite"></p>

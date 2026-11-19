@@ -5,7 +5,10 @@ import vm from "node:vm";
 import { test } from "node:test";
 
 function frontendSource(): string {
-  return stripTypeScriptTypes(fs.readFileSync("web/app.ts", "utf8"));
+  const helper = fs.readFileSync("operations-reviewer.ts", "utf8").replace(/^export /gm, "");
+  const frontend = fs.readFileSync("web/app.ts", "utf8")
+    .replace(/^import \{ operationsReviewerName \} from "\.\.\/operations-reviewer\.js";\s*/m, "");
+  return stripTypeScriptTypes(`${helper}\n${frontend}`);
 }
 
 function mockGrid(list: { innerHTML: string }) {
@@ -19,7 +22,7 @@ function mockGrid(list: { innerHTML: string }) {
     (status === "all" || row.status === status));
   const redraw = () => {
     list.innerHTML = displayed().map((row) => options.columnDefs.map((col) =>
-      col.cellRenderer ? col.cellRenderer({ data: row }) : String(row[col.field || ""] ?? "")).join(" ")).join("\n");
+      col.hide ? "" : col.cellRenderer ? col.cellRenderer({ data: row }) : String(row[col.field || ""] ?? "")).join(" ")).join("\n");
     options.onModelUpdated?.();
   };
   const api = {
@@ -118,7 +121,7 @@ test("REQ table uses AG Grid Community for sorting, column filtering and paginat
   assert.equal(options.pagination, true);
   assert.equal((options.defaultColDef as { sortable: boolean; filter: boolean }).sortable, true);
   assert.equal((options.defaultColDef as { sortable: boolean; filter: boolean }).filter, true);
-  assert.ok((options.columnDefs as { headerName: string }[]).some((column) => column.headerName === "Estado del portal"));
+  assert.ok((options.columnDefs as { headerName: string }[]).some((column) => column.headerName === "Estado y conversación"));
 });
 
 test("dashboard refresh repaints changed microservice names when the REQ column value stays the same", () => {
@@ -174,19 +177,16 @@ test("dashboard remains usable when the AG Grid asset cannot load", () => {
   } };
   const context = vm.createContext({ document, URL, console });
   const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
-  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.updateSummaryForTest = updateSummary;`, context);
-  const ui = context as { renderRowsForTest: (reqs: string[], results: object[]) => void; updateSummaryForTest: (reqs: string[], results: object[]) => void };
-  ui.updateSummaryForTest(["REQ123"], [{ req: "REQ123", conversationStatus: "Respondida" }]);
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;`, context);
+  const ui = context as { renderRowsForTest: (reqs: string[], results: object[]) => void };
   ui.renderRowsForTest(["REQ123"], [{ req: "REQ123", status: "Pending" }]);
-  assert.equal(fields.get("#count-total")?.textContent, 1);
-  assert.equal(fields.get("#count-answered")?.textContent, 1);
   assert.equal(fields.get("#empty-state")?.hidden, false);
   assert.match(fields.get("#empty-state")?.textContent ?? "", /tabla.*no disponible/i);
 });
 
 test("monitored table labels the stated deadline without claiming verified closure", () => {
   const source = frontendSource();
-  assert.match(source, /headerName: "Plazo y revisión"/);
+  assert.match(source, /headerName: "Plazo y actividad"/);
   const list = { innerHTML: "" };
   const empty = { hidden: false };
   const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : selector === "#empty-state" ? empty : {} };
@@ -197,11 +197,118 @@ test("monitored table labels the stated deadline without claiming verified closu
     (context as { renderRowsForTest: (reqs: string[], results: object[]) => void }).renderRowsForTest(["REQ123"], [{ req: "REQ123", ...result }]);
     return list.innerHTML;
   };
-  assert.match(render({ conversationStatus: "Pendiente de respuesta", activeDeadline: { dueAt: "2026-10-10T04:59:00.000Z", sourceKey: "cycle" } }), /9\/10\/2026.*11:59/);
+  assert.match(render({ conversationStatus: "Pendiente de respuesta", activeDeadline: { dueAt: "2026-10-10T04:59:00.000Z", sourceKey: "cycle" } }), /Plazo indicado<\/span><span class="req-review-date">2026-10-09 23:59<\/span>/);
   assert.match(render({ conversationStatus: "Pendiente de respuesta", activeDeadline: null }), /Sin plazo indicado/);
+  assert.match(render({ conversationStatus: "Respondida", activeDeadline: null,
+     statedDeadlineDate: "2026-11-12", deadlineOrderKnown: false }), /Plazo indicado<\/span><span class="req-review-date">2026-11-12<\/span>/);
+  assert.match(list.innerHTML, /Fecha indicada ya pasó · vigencia sin confirmar/);
+  assert.doesNotMatch(list.innerHTML, /23:59/);
+  assert.match(render({ conversationStatus: "Pendiente de respuesta", activeDeadline: null,
+     statedDeadlineDate: "2026-11-12", deadlineOrderKnown: true }), /Plazo indicado<\/span><span class="req-review-date">2026-11-12<\/span>/);
+  assert.match(render({ conversationStatus: "Respondida", activeDeadline: null,
+    statedDeadlineDate: "2026-11-12", deadlineOrderKnown: true }), /Plazo inactivo/);
   assert.match(render({ conversationStatus: "Respondida", activeDeadline: { dueAt: "2026-10-10T04:59:00.000Z" } }), /Plazo inactivo/);
   assert.doesNotMatch(render({ conversationStatus: "Finalizada" }), /11:59/);
   assert.doesNotMatch(list.innerHTML, /cierre verificado/i);
+});
+
+test("deadline details retain time and uncertainty context while the table shows only the date", () => {
+  const context = vm.createContext({ document: { querySelector: () => ({}) }, URL, console, agGrid: mockGrid({ innerHTML: "" }).agGrid });
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.statedDeadlineForTest = statedDeadline;`, context);
+  const deadline = (context as { statedDeadlineForTest: (result: object) => string }).statedDeadlineForTest;
+  assert.match(deadline({ conversationStatus: "Pendiente de respuesta", activeDeadline: { dueAt: "2026-10-10T04:59:00.000Z" } }), /9\/10\/2026.*11:59/);
+  assert.match(deadline({ conversationStatus: "Respondida", statedDeadlineDate: "2026-11-12", deadlineOrderKnown: false }), /12\/11\/2026 \(vigencia sin confirmar; sin hora\)/);
+});
+
+test("table shows the latest requester reply time only when its order is established", () => {
+  const list = { innerHTML: "" };
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : {} };
+  const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
+  vm.runInContext(`${frontendSource().split('elements.credentialsButton.addEventListener')[0]}\nthis.renderRowsForTest = renderRows;`, context);
+  const render = (comments: object[], requester = "Ana Pérez") => {
+    (context as { renderRowsForTest: (reqs: string[], results: object[]) => void })
+      .renderRowsForTest(["REQ123"], [{ req: "REQ123", requester, comments }]);
+    return list.innerHTML;
+  };
+  const ops = { author: "Operations", date: "10 nov 2026, 12:00", isResponse: true };
+  const early = { author: "ANA PEREZ", date: "9 nov 2026, 18:02", isResponse: false };
+  const latest = { author: "Ana Pérez", date: "11 nov 2026, 09:35", isResponse: false };
+  assert.match(render([latest, ops, early]), /Última respuesta del usuario<\/span><span class="req-reply-value">2026-11-11 09:35<\/span>/);
+  assert.match(render([{ ...latest, date: "4/11/2026, 8:19 p.\u00a0m." },
+     { ...early, date: "3/11/2026, 11:02 p. m." }]), /Última respuesta del usuario<\/span><span class="req-reply-value">2026-11-04 20:19<\/span>/);
+  assert.match(render([latest, { ...early, date: null }]), /Última respuesta del usuario<\/span><span class="req-reply-value">Fecha no disponible<\/span>/);
+  assert.match(render([ops]), /Última respuesta del usuario<\/span><span class="req-reply-value">Sin respuesta registrada<\/span>/);
+  assert.match(render([{ ...ops, isResponse: false }], ""), /Última respuesta del usuario<\/span><span class="req-reply-value">Fecha no disponible<\/span>/);
+});
+
+test("activity shows the last Operations reply instead of per-REQ review time", () => {
+  const list = { innerHTML: "" };
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : {} };
+  const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
+  vm.runInContext(`${frontendSource().split('elements.credentialsButton.addEventListener')[0]}\nthis.renderRowsForTest = renderRows;`, context);
+  const render = (result: object) => {
+    (context as { renderRowsForTest: (reqs: string[], results: object[]) => void })
+      .renderRowsForTest(["REQ123"], [{ req: "REQ123", checkedAt: "2026-11-13T21:00:00.000Z", ...result }]);
+    return list.innerHTML;
+  };
+  const html = render({ latestOperationsComment: { author: "Operations", date: "9 nov 2026, 18:02" } });
+  assert.match(html, /Última respuesta de Operaciones<\/span><span[^>]*>2026-11-09 18:02<\/span>/);
+  assert.doesNotMatch(html, /Última revisión|2026-11-13 16:00/);
+  assert.match(render({ latestOperationsComment: { date: "4\/11\/2026, 8:19 p. m." } }), /2026-11-04 20:19/);
+  assert.match(render({ latestOperationsComment: { date: null } }), /Última respuesta de Operaciones<\/span><span[^>]*>Fecha no disponible<\/span>/);
+  assert.match(render({}), /Última respuesta de Operaciones<\/span><span[^>]*>Sin respuesta registrada<\/span>/);
+});
+
+test("monitor header keeps its last review globally visible outside schedule", () => {
+  const fields = new Map<string, { textContent: string; className: string; disabled: boolean }>();
+  const document = { querySelector: (selector: string) => {
+    if (selector === "#query-form") return { querySelector: () => ({ disabled: false }) };
+    if (!fields.has(selector)) fields.set(selector, { textContent: "", className: "", disabled: false });
+    return fields.get(selector);
+  } };
+  const context = vm.createContext({ document, URL, console });
+  vm.runInContext(`${frontendSource().split('elements.credentialsButton.addEventListener')[0]}\nthis.updateMonitorForTest = updateMonitor;`, context);
+  (context as { updateMonitorForTest: (monitor: object, schedule: object, progress: object, reqs: string[]) => void })
+    .updateMonitorForTest({ activeTask: null, running: false, finishedAt: "2026-11-13T21:00:00.000Z" },
+      { allowed: false, reason: "fuera del horario laboral" }, {}, ["REQ123"]);
+  assert.match(fields.get("#monitor-time")?.textContent ?? "", /Última revisión del monitor: 2026-11-13 16:00/);
+});
+
+test("table leads with the Operations reply and marks only confirmed timed deadlines near", () => {
+  const list = { innerHTML: "" };
+  const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : {} };
+  const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
+  const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;`, context);
+  const render = (result: object) => {
+    (context as { renderRowsForTest: (reqs: string[], results: object[]) => void })
+      .renderRowsForTest(["REQ123"], [{ req: "REQ123", ...result }]);
+    return list.innerHTML;
+  };
+  const near = new Date(Date.now() + 6 * 60 * 60 * 1000).toISOString();
+  const later = new Date(Date.now() + 30 * 60 * 60 * 1000).toISOString();
+  const timed = { status: "Pendiente", conversationStatus: "Pendiente de respuesta",
+    latestOperationsComment: { author: "Operations", date: "9 nov 2026, 18:02", text: "Please reply" },
+    activeDeadline: { dueAt: near, sourceKey: "cycle" } };
+  const html = render(timed);
+  assert.ok(html.indexOf("Operaciones respondió") < html.indexOf("Portal: Pendiente"));
+  assert.ok(html.indexOf("Conversación") < html.indexOf("Portal: Pendiente"));
+  assert.ok(html.indexOf('class="status-stack"') < html.indexOf('class="req-review"'));
+  assert.ok(html.indexOf('class="req-title"') < html.indexOf('class="status-stack"'));
+  assert.match(html, /Vence en menos de 24 horas/);
+  assert.match(html, /class="badge deadline-near"/);
+  assert.doesNotMatch(render({ ...timed, activeDeadline: { dueAt: later, sourceKey: "cycle" } }), /Vence en menos de 24 horas/);
+  const past = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+  assert.match(render({ ...timed, activeDeadline: { dueAt: past, sourceKey: "cycle" } }), /class="badge deadline-overdue">Plazo vencido<\/span>/);
+  assert.doesNotMatch(render({ ...timed, conversationStatus: "Respondida", activeDeadline: { dueAt: past, sourceKey: "cycle" } }), /Plazo vencido/);
+  assert.doesNotMatch(render({ ...timed, activeDeadline: null, statedDeadlineDate: "2026-11-12", deadlineOrderKnown: false }), /Plazo vencido/);
+  assert.doesNotMatch(render({ ...timed, activeDeadline: null, statedDeadlineDate: "2099-01-01", deadlineOrderKnown: false }), /Fecha indicada ya pasó/);
+  assert.doesNotMatch(render({ ...timed, conversationStatus: "Respondida" }), /Vence en menos de 24 horas/);
+  assert.doesNotMatch(render({ ...timed, activeDeadline: null, statedDeadlineDate: "2026-11-12",
+    comments: [{ date: null }, { date: null }] }), /Vence en menos de 24 horas/);
+  assert.match(list.innerHTML, /Orden de mensajes sin confirmar/);
+  assert.doesNotMatch(render({ status: "Pendiente", conversationStatus: "Sin comentario de operaciones" }), /Operaciones respondió/);
 });
 
 test("Acceso displays only an unverified username label and local session availability", () => {
@@ -296,7 +403,7 @@ test("completed monitor authentication failure opens Acceso once per run", () =>
   const context = vm.createContext({ document, URL, console, messages, agGrid: mockGrid({ innerHTML: "" }).agGrid });
   const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderDashboardForTest = renderDashboard;
-    renderAuthStatus = () => {}; updateSummary = () => {}; updateMonitor = () => {}; renderRows = () => {}; updateProgressPolling = () => {};
+    renderAuthStatus = () => {}; updateMonitor = () => {}; renderRows = () => {}; updateProgressPolling = () => {};
     toast = (message) => messages.push(message);`, context);
   const render = (monitor: object) => (context as { renderDashboardForTest: (data: object) => void })
     .renderDashboardForTest({ reqs: [], results: [], monitor, auth: {} });
@@ -427,7 +534,7 @@ test("header checkbox selects all eligible REQs across filters and pagination", 
   assert.deepEqual([...ui.selectedForTest()], ["REQ101", "REQ102", "REQ103"]);
 });
 
-test("latest-review sort puts newly added unreviewed REQs first", () => {
+test("creation submission is the default sort and review remains selectable", () => {
   const list = { innerHTML: "" };
   const grid = mockGrid(list);
   const empty = { hidden: false, textContent: "" };
@@ -440,15 +547,16 @@ test("latest-review sort puts newly added unreviewed REQs first", () => {
   const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows;
     this.setDashboardForTest = (reqs) => { state.dashboard = { reqs, monitor: { activeTask: null }, schedule: { allowed: true } }; };
-    this.reviewColumnForTest = gridOptions.columnDefs.find((column) => column.field === "checkedAt");`, context);
+     this.dateColumnForTest = gridOptions.columnDefs.find((column) => column.colId === "sentAt");
+     this.reviewColumnForTest = gridOptions.columnDefs.find((column) => column.colId === "checkedAt");`, context);
   const ui = context as { renderRowsForTest: (reqs: string[], results: object[]) => void;
     setDashboardForTest: (reqs: string[]) => void;
-    reviewColumnForTest: { sort: string; valueGetter: (params: { data: { checkedAt: string | null } }) => number;
-      comparator: (a: number, b: number) => number } };
-  assert.equal(ui.reviewColumnForTest.sort, "desc");
-  const rank = (checkedAt: string | null) => ui.reviewColumnForTest.valueGetter({ data: { checkedAt } });
-  assert.ok(ui.reviewColumnForTest.comparator(rank(null), rank("2026-11-05T10:00:00.000Z")) > 0);
-  assert.ok(ui.reviewColumnForTest.comparator(rank("2026-11-05T11:00:00.000Z"), rank("2026-11-05T10:00:00.000Z")) > 0);
+     dateColumnForTest: { sort: string; valueGetter: (params: { data: { dateSort: { sentAt: number } } }) => number };
+     reviewColumnForTest: { hide: boolean; valueGetter: (params: { data: { dateSort: { checkedAt: number } } }) => number } };
+  assert.equal(ui.dateColumnForTest.sort, "desc");
+  assert.equal(ui.reviewColumnForTest.hide, true);
+  assert.ok(ui.dateColumnForTest.valueGetter({ data: { dateSort: { sentAt: 2 } } }) >
+    ui.dateColumnForTest.valueGetter({ data: { dateSort: { sentAt: 1 } } }));
   ui.setDashboardForTest(["REQ101", "REQ102", "REQ103"]);
   ui.renderRowsForTest(["REQ101", "REQ102", "REQ103"], []);
   assert.ok(list.innerHTML.indexOf("REQ103") < list.innerHTML.indexOf("REQ101"));
@@ -516,7 +624,7 @@ test("dashboard alerts once for partial or total scan failures and not for clean
   const context = vm.createContext({ document, URL, console, messages, agGrid: mockGrid({ innerHTML: "" }).agGrid });
   const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
   vm.runInContext(`${script}\nthis.renderDashboardForTest = renderDashboard;
-    renderAuthStatus = () => {}; updateSummary = () => {}; updateMonitor = () => {}; renderRows = () => {}; updateProgressPolling = () => {};
+    renderAuthStatus = () => {}; updateMonitor = () => {}; renderRows = () => {}; updateProgressPolling = () => {};
     toast = (message) => messages.push(message);`, context);
   const render = (startedAt: string, items: object, running: boolean, exitCode: number, selectedReqs: string[] | null = null) =>
     (context as { renderDashboardForTest: (data: object) => void }).renderDashboardForTest({
@@ -566,7 +674,7 @@ test("late dashboard response cannot replace newer monitor progress", async () =
 function dashboardHarness() {
   const html = fs.readFileSync("web/index.html", "utf8");
   const panel = { innerHTML: "" };
-  const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
+  const dialog = { open: false, dataset: {} as { req?: string }, showModal() { this.open = true; }, close() { this.open = false; } };
   const button = { dataset: { details: "REQ123" } };
   const list = { innerHTML: "" };
   const empty = { hidden: false };
@@ -574,7 +682,7 @@ function dashboardHarness() {
   const document = { querySelector: (selector: string) => selector === "#req-grid" ? list : selector === "#empty-state" ? empty : selector === "#query-result" ? query : selector === "#req-details-dialog" ? dialog : selector === "#req-details-content" ? panel : {} };
   const context = vm.createContext({ document, URL, console, agGrid: mockGrid(list).agGrid });
   const script = frontendSource().split('elements.credentialsButton.addEventListener')[0];
-  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails; this.renderQueryResultForTest = renderQueryResult;`, context);
+  vm.runInContext(`${script}\nthis.renderRowsForTest = renderRows; this.toggleDetailsForTest = toggleDetails; this.renderQueryResultForTest = renderQueryResult; this.setMissingTagsForTest = (tags) => { state.missingTags = tags; };`, context);
   const render = (result: object) => {
     dialog.close();
     panel.innerHTML = "";
@@ -584,12 +692,13 @@ function dashboardHarness() {
   const toggle = () => (context as { toggleDetailsForTest: (button: object) => void }).toggleDetailsForTest(button);
   const renderQuery = (result: object) => (context as { renderQueryResultForTest: (result: object) => void })
     .renderQueryResultForTest({ req: "REQ123", ...result });
-  return { html, list, panel, cell: panel, dialog, button, render, toggle, query, renderQuery };
+  const setMissingTags = (tags: object) => (context as { setMissingTagsForTest: (tags: object) => void }).setMissingTagsForTest(tags);
+  return { html, list, panel, cell: panel, dialog, button, render, toggle, query, renderQuery, setMissingTags };
 }
 
 test("portal status is literal, independent of conversation status and unavailable when absent", () => {
   const ui = dashboardHarness();
-  assert.match(frontendSource(), /headerName: "Estado del portal"/);
+  assert.match(frontendSource(), /headerName: "Estado y conversación"/);
   ui.render({ status: "Asignado por mesa", conversationStatus: "Pendiente de respuesta", microservices: ["servicio-a"], title: "Resumen" });
   assert.match(ui.list.innerHTML, /Asignado por mesa/);
   assert.doesNotMatch(ui.list.innerHTML, /<span class="badge[^>]*>Pendiente de respuesta/);
@@ -604,12 +713,28 @@ test("table exposes conversation state and Operations reply without replacing th
   ui.render({ status: "Pendiente", conversationStatus: "Respondida", latestOperationsComment: {
     author: "Operations", date: null, text: "Please review", attachments: [],
   } });
-  assert.match(ui.list.innerHTML, /class="badge portal-status warning"[^>]*>Pendiente<\/span>/);
-  assert.match(ui.list.innerHTML, /Conversación: Respondida/);
-  assert.match(ui.list.innerHTML, /Respuesta de Operaciones registrada/);
+  assert.match(ui.list.innerHTML, /class="badge portal-status warning"[^>]*>Portal: Pendiente<\/span>/);
+  assert.match(ui.list.innerHTML, /Conversación<\/span><span class="conversation-status">Respondida<\/span>/);
+  assert.match(ui.list.innerHTML, /Ya respondiste/);
+  assert.doesNotMatch(ui.list.innerHTML, /Operaciones respondió/);
+  ui.render({ status: "Pendiente", conversationStatus: "Pendiente de respuesta", latestOperationsComment: {
+    author: "Operations", date: null, text: "Please review", attachments: [],
+  } });
+  assert.match(ui.list.innerHTML, /Operaciones respondió/);
+  assert.doesNotMatch(ui.list.innerHTML, /Ya respondiste/);
   ui.render({ status: "Asignada", conversationStatus: "<script>", latestOperationsComment: null });
-  assert.match(ui.list.innerHTML, /Conversación: &lt;script&gt;/);
-  assert.doesNotMatch(ui.list.innerHTML, /Respuesta de Operaciones registrada/);
+  assert.match(ui.list.innerHTML, /Conversación<\/span><span class="conversation-status">&lt;script&gt;<\/span>/);
+  assert.doesNotMatch(ui.list.innerHTML, /Operaciones respondió/);
+});
+
+test("estimated business deadline is visibly distinct from a stated deadline and cannot trigger an alert", () => {
+  const ui = dashboardHarness();
+  ui.render({ status: "Pendiente", conversationStatus: "Pendiente de respuesta", activeDeadline: null,
+    estimatedDeadlineDate: "2026-11-20" });
+  assert.match(ui.list.innerHTML, /Estimado: 2026-11-20 \(3 días hábiles\)/);
+  assert.doesNotMatch(ui.list.innerHTML, /Vence en menos de 24 horas|Plazo vencido/);
+  ui.toggle();
+  assert.match(ui.cell.innerHTML, /20\/11\/2026 \(estimado: 3 días hábiles\)/);
 });
 
 test("portal status badges retain literal text with distinct, safe color classes", () => {
@@ -619,16 +744,29 @@ test("portal status badges retain literal text with distinct, safe color classes
     ["Finalizada", "success"], ["Rechazada", "danger"],
   ]) {
     ui.render({ status, conversationStatus: "Pendiente de respuesta" });
-    assert.match(ui.list.innerHTML, new RegExp(`class="badge portal-status ${tone}"[^>]*>${status}<`));
+    assert.match(ui.list.innerHTML, new RegExp(`class="badge portal-status ${tone}"[^>]*>Portal: ${status}<`));
   }
   ui.render({ status: "Other <status>" });
-  assert.match(ui.list.innerHTML, /class="badge portal-status neutral"[^>]*>Other &lt;status&gt;<\/span>/);
+  assert.match(ui.list.innerHTML, /class="badge portal-status neutral"[^>]*>Portal: Other &lt;status&gt;<\/span>/);
   ui.render({ status: null });
-  assert.match(ui.list.innerHTML, /class="badge portal-status unavailable"[^>]*>Estado no disponible<\/span>/);
+  assert.match(ui.list.innerHTML, /class="badge portal-status unavailable"[^>]*>Portal: Estado no disponible<\/span>/);
   const css = fs.readFileSync("web/styles.css", "utf8");
   for (const tone of ["warning", "info", "success", "danger", "neutral", "unavailable"]) {
     assert.match(css, new RegExp(`\\.portal-status\\.${tone}\\s*\\{`));
   }
+});
+
+test("dashboard distinguishes a closed ticket from its approval outcome", () => {
+  const ui = dashboardHarness();
+  ui.render({ status: "Finalizado", conversationStatus: "Finalizada", closureOutcome: "needs_correction" });
+  assert.match(ui.list.innerHTML, /portal-status warning[^>]*>Portal: Finalizado/);
+  assert.match(ui.list.innerHTML, /Cerrada con observaciones/);
+  ui.render({ status: "Finalizado", conversationStatus: "Finalizada", closureOutcome: "unknown" });
+  assert.match(ui.list.innerHTML, /portal-status neutral[^>]*>Portal: Finalizado/);
+  assert.match(ui.list.innerHTML, /Cierre sin resultado claro/);
+  ui.renderQuery({ status: "Finalizado", conversationStatus: "Finalizada", closureOutcome: "approved" });
+  assert.match(ui.query.innerHTML, /Resultado del cierre \(calculado\)/);
+  assert.match(ui.query.innerHTML, /Cierre aprobado/);
 });
 
 test("manual REQ message separates the Operations reply from status and preserves safe line breaks", () => {
@@ -637,7 +775,7 @@ test("manual REQ message separates the Operations reply from status and preserve
     author: "Operaciones", text: "Primera línea\nSegunda <línea>", attachments: [],
   } });
   assert.match(ui.query.innerHTML, /Último comentario de Operaciones/);
-  assert.match(ui.query.innerHTML, /Primera línea\nSegunda &lt;línea&gt;/);
+  assert.match(ui.query.innerHTML, /Primera línea\n\nSegunda &lt;línea&gt;/);
   assert.doesNotMatch(ui.query.innerHTML, /<línea>/);
   assert.match(ui.query.innerHTML, /Estado del portal/);
 });
@@ -665,6 +803,110 @@ test("details open in a separate dialog without compressing the grid cell", () =
   ui.render(result);
   assert.equal(ui.dialog.open, false);
   assert.doesNotMatch(ui.list.innerHTML, /prueba@example.invalid/);
+});
+
+test("request title appears below its REQ without a separate Detail column", () => {
+  const ui = dashboardHarness();
+  ui.render({ title: "Short <request>" });
+  assert.match(ui.list.innerHTML, /data-copy="REQ123"[^>]*>REQ123<\/button><\/div><span class="req-title">Short &lt;request&gt;<\/span>/);
+  assert.doesNotMatch(ui.list.innerHTML, /class="req-title"[^>]*>Short <request>/);
+  const context = vm.createContext({ document: { querySelector: () => ({}) }, URL, console });
+  vm.runInContext(`${frontendSource().split('elements.credentialsButton.addEventListener')[0]}\nthis.columnsForTest = gridOptions.columnDefs;`, context);
+  const columns = (context as { columnsForTest: { field?: string; filterValueGetter?: (params: { data: object }) => string }[] }).columnsForTest;
+  assert.ok(!columns.some((column) => column.field === "detail"));
+  assert.match(columns.find((column) => column.field === "req")?.filterValueGetter?.({ data: {
+    req: "REQ123", project: "Project", microservices: "", detail: "Short request",
+  } }) ?? "", /Short request/);
+  ui.toggle();
+  assert.match(ui.cell.innerHTML, /Short &lt;request&gt;/);
+});
+
+test("the table has no redundant refresh control and retains scheduled updates", () => {
+  assert.doesNotMatch(fs.readFileSync("web/index.html", "utf8"), /id="refresh-button"/);
+  assert.doesNotMatch(frontendSource(), /elements\.refresh|#refresh-button/);
+  assert.match(frontendSource(), /window\.setInterval\(\(\) => \{/);
+  assert.match(frontendSource(), /loadDashboard\(true\)/);
+});
+
+test("every REQ row offers the lock action regardless of portal status", () => {
+  const ui = dashboardHarness();
+  for (const result of [{}, { status: "En curso" }, { status: "Finalizado" }]) {
+    ui.render(result);
+    assert.match(ui.list.innerHTML, /data-lock="REQ123" data-locked="false"/);
+    assert.match(ui.list.innerHTML, /aria-label="Bloquear REQ123"/);
+  }
+});
+
+test("only manually assigned missing tags appear in the row and details editor", () => {
+  const ui = dashboardHarness();
+  ui.render({ description: "Documentación MD y ejemplo de consumo" });
+  assert.doesNotMatch(ui.list.innerHTML, /Falta MD de documentación/);
+  ui.setMissingTags({ REQ123: ["documentation_md", "consumption_example"] });
+  ui.render({ description: "Documentación MD y ejemplo de consumo" });
+  assert.match(ui.list.innerHTML, /Falta MD de documentación/);
+  assert.match(ui.list.innerHTML, /Falta ejemplo de consumo/);
+  assert.doesNotMatch(ui.list.innerHTML, /Falta estándar de logs/);
+  ui.toggle();
+  assert.match(ui.panel.innerHTML, /name="missingTag" value="documentation_md" checked/);
+  assert.match(ui.panel.innerHTML, /name="missingTag" value="consumption_example" checked/);
+  assert.match(ui.panel.innerHTML, /name="missingTag" value="logging_standard"/);
+  assert.doesNotMatch(ui.panel.innerHTML, /name="missingTag" value="logging_standard" checked/);
+});
+
+test("stored conversation history appears in the details dialog without exposing markup", () => {
+  const ui = dashboardHarness();
+  ui.render({ comments: [
+    { author: "Solicitante", date: "10 nov 2026, 09:00", text: "Primera respuesta", attachments: [] },
+    { author: "<Operaciones>", date: null, text: "Segunda <respuesta>\nOtra línea", attachments: [{ name: "archivo<script>.pdf" }] },
+  ] });
+  assert.doesNotMatch(ui.list.innerHTML, /Primera respuesta|Segunda/);
+  ui.toggle();
+  assert.equal(ui.dialog.open, true);
+  assert.match(ui.cell.innerHTML, /Historial de la conversación/);
+  assert.ok(ui.cell.innerHTML.indexOf("Primera respuesta") < ui.cell.innerHTML.indexOf("Segunda &lt;respuesta&gt;"));
+  assert.match(ui.cell.innerHTML, /&lt;Operaciones&gt;/);
+  assert.match(ui.cell.innerHTML, /Fecha no disponible/);
+  assert.match(ui.cell.innerHTML, /archivo&lt;script&gt;\.pdf/);
+  assert.doesNotMatch(ui.cell.innerHTML, /<Operaciones>|<respuesta>|<script>/);
+
+  ui.render({});
+  ui.toggle();
+  assert.match(ui.cell.innerHTML, /Historial no disponible en los datos guardados/);
+  ui.render({ comments: [] });
+  ui.toggle();
+  assert.match(ui.cell.innerHTML, /No hay comentarios guardados/);
+});
+
+test("Operations messages remove enclosing quotes and preserve readable paragraph breaks", () => {
+  const ui = dashboardHarness();
+  const text = '"👋 Saludo\n1. Revisar "RES_MS" <script>\n2. Confirmar"';
+  const operations = { author: "Operations", date: null, text, isResponse: true, attachments: [] };
+  ui.render({ comments: [
+    { author: "Requester", date: null, text: '"Keep requester quotes"', isResponse: false, attachments: [] },
+    operations,
+  ], latestOperationsComment: operations });
+  ui.toggle();
+  assert.match(ui.cell.innerHTML, /<p>&quot;Keep requester quotes&quot;<\/p>/);
+  assert.match(ui.cell.innerHTML, /<p class="operations-message">👋 Saludo\n\n1\. Revisar &quot;RES_MS&quot; &lt;script&gt;\n\n2\. Confirmar<\/p>/);
+  assert.doesNotMatch(ui.cell.innerHTML, /<script>|<p class="operations-message">&quot;|Confirmar&quot;<\/p>/);
+  ui.renderQuery({ status: "Pending", latestOperationsComment: operations });
+  assert.match(ui.query.innerHTML, /<p>👋 Saludo\n\n1\. Revisar &quot;RES_MS&quot; &lt;script&gt;\n\n2\. Confirmar<\/p>/);
+});
+
+test("Operations reviewer signature replaces the profile owner only in rendered messages", () => {
+  const ui = dashboardHarness();
+  const operations = { author: "Profile Owner", date: null, isResponse: true,
+    text: "Please review.\n--Revisa: Cesar Carreño\nBefore Friday", attachments: [] };
+  ui.render({ comments: [operations, { author: "Requester", date: null, isResponse: false,
+    text: "I responded", attachments: [] }], latestOperationsComment: operations });
+  ui.toggle();
+  assert.match(ui.cell.innerHTML, /<strong>Cesar Carreño<\/strong>/);
+  assert.equal(operations.author, "Profile Owner", "stored author must not change");
+  ui.renderQuery({ latestOperationsComment: operations });
+  assert.match(ui.query.innerHTML, /<dt>Operaciones<\/dt><dd>Cesar Carreño<\/dd>/);
+  ui.render({ comments: [{ ...operations, text: "No signature" }] });
+  ui.toggle();
+  assert.match(ui.cell.innerHTML, /<strong>Profile Owner<\/strong>/);
 });
 
 test("missing values stay unavailable and stored text and links cannot inject markup", () => {
@@ -730,7 +972,7 @@ function filterHarness() {
     return fields.get(selector);
   };
   const panel = { innerHTML: "" };
-  const dialog = { open: false, showModal() { this.open = true; }, close() { this.open = false; } };
+  const dialog = { open: false, dataset: {} as { req?: string }, showModal() { this.open = true; }, close() { this.open = false; } };
   const list = { innerHTML: "" };
   const detailsButton = {
     dataset: { details: "REQ100" },
@@ -768,6 +1010,42 @@ function filterHarness() {
   const renderAll = () => { typed.setDashboardForTest(["REQ100", "REQ200", "REQ300"]); typed.renderRowsForTest(["REQ100", "REQ200", "REQ300"], rows()); };
   return { fields, list, panel, dialog, cell: panel, detailsButton, typed, renderAll, stub, grid };
 }
+
+test("searchable filter suggestions follow monitored REQs without clearing a current choice", () => {
+  const ui = filterHarness();
+  ui.typed.setDashboardForTest(["REQ100", "REQ200"]);
+  ui.typed.renderRowsForTest(["REQ100", "REQ200"], [
+    { req: "REQ100", projectName: "Alpha", microservices: ["shared", "billing"], status: "Pending",
+      requestDetails: { requestType: "Static" } },
+    { req: "REQ200", projectName: "Beta", microservices: ["shared"], status: "Completed",
+      requestDetails: { requestType: "Validation" } },
+    { req: "REQ999", projectName: "Unmonitored", microservices: ["unused"], status: "Other" },
+  ]);
+  assert.match(ui.stub("#filter-project-options").innerHTML, /Alpha.*Beta/);
+  assert.doesNotMatch(ui.stub("#filter-project-options").innerHTML, /Unmonitored/);
+  assert.equal((ui.stub("#filter-microservice-options").innerHTML.match(/>shared<\/div>/g) ?? []).length, 1);
+  ui.stub("#filter-project").value = "Alpha";
+  ui.typed.setDashboardForTest(["REQ200"]);
+  ui.typed.renderRowsForTest(["REQ200"], [{ req: "REQ200", projectName: "Gamma", microservices: ["new"],
+    status: "In progress", requestDetails: { requestType: "Support" } }]);
+  assert.match(ui.stub("#filter-project-options").innerHTML, /role="option"[^>]*>Gamma<\/div>/);
+  assert.doesNotMatch(ui.stub("#filter-project-options").innerHTML, /Alpha|Beta/);
+  assert.equal(ui.stub("#filter-project").value, "Alpha", "refresh must not overwrite typed selection");
+});
+
+test("inferred project shares the observed project's filter option", () => {
+  const ui = filterHarness();
+  const reqs = ["REQ100", "REQ101"];
+  ui.typed.setDashboardForTest(reqs);
+  ui.typed.renderRowsForTest(reqs, [
+    { req: "REQ100", projectName: "Alpha", microservices: ["shared"] },
+    { req: "REQ101", projectName: null, microservices: ["shared"] },
+  ]);
+  const options = ui.stub("#filter-project-options").innerHTML;
+  assert.equal((options.match(/>Alpha<\/div>/g) ?? []).length, 1);
+  assert.doesNotMatch(options, /Alpha \(inferido\)/);
+  assert.match(ui.list.innerHTML, /Alpha \(inferido\)/, "the row retains its inference provenance");
+});
 
 test("text filter matches REQ number, observed project and microservice without portal queries", () => {
   const ui = filterHarness();
@@ -826,7 +1104,9 @@ test("status selector filters literal portal status including unavailable", () =
   assert.doesNotMatch(ui.list.innerHTML, /REQ100|REQ200/);
 });
 
-test("summary metrics follow filtered rows across pages and clear filters restores all counts", () => {
+test("table result count follows filtered rows across pages and clear filters restores it without metric cards", () => {
+  const html = fs.readFileSync("web/index.html", "utf8");
+  assert.doesNotMatch(html, /class="summary"|id="count-(?:total|pending|answered|validation|finished)"/);
   const ui = filterHarness();
   const reqs = Array.from({ length: 13 }, (_, index) => `REQ${index + 100}`);
   const results = reqs.map((req, index) => ({ req,
@@ -836,29 +1116,16 @@ test("summary metrics follow filtered rows across pages and clear filters restor
       index === 2 ? "En validación" : "Finalizada" }));
   ui.typed.setDashboardForTest(reqs);
   ui.typed.renderRowsForTest(reqs, results);
-  assert.equal(ui.fields.get("#count-total")?.textContent, 13);
-  assert.equal(ui.fields.get("#count-pending")?.textContent, 1);
-  assert.equal(ui.fields.get("#count-answered")?.textContent, 1);
-  assert.equal(ui.fields.get("#count-validation")?.textContent, 1);
-  assert.equal(ui.fields.get("#count-finished")?.textContent, 10);
+  assert.match(String(ui.fields.get("#filter-count")?.textContent ?? ""), /13.*13/);
   ui.typed.setFiltersForTest("Payments", "all");
-  assert.equal(ui.fields.get("#count-total")?.textContent, 1);
-  assert.equal(ui.fields.get("#count-pending")?.textContent, 1);
-  assert.equal(ui.fields.get("#count-finished")?.textContent, 0);
   assert.match(String(ui.fields.get("#filter-count")?.textContent ?? ""), /1.*13/);
   ui.typed.setFiltersForTest("", "Finalizado");
-  assert.equal(ui.fields.get("#count-total")?.textContent, 12, "counts include filtered rows beyond the first page");
-  assert.equal(ui.fields.get("#count-answered")?.textContent, 1);
-  assert.equal(ui.fields.get("#count-validation")?.textContent, 1);
-  assert.equal(ui.fields.get("#count-finished")?.textContent, 10);
+  assert.match(String(ui.fields.get("#filter-count")?.textContent ?? ""), /12.*13/, "count includes filtered rows beyond the first page");
   ui.typed.setFiltersForTest("sin-coincidencias", "Finalizado");
-  assert.equal(ui.fields.get("#count-total")?.textContent, 0);
-  assert.equal(ui.fields.get("#count-pending")?.textContent, 0);
+  assert.match(String(ui.fields.get("#filter-count")?.textContent ?? ""), /0.*13/);
   assert.equal(ui.stub("#empty-state").hidden, false);
   assert.match(ui.stub("#empty-state").textContent, /sin coincidencias/i);
   ui.typed.clearTableFiltersForTest();
-  assert.equal(ui.fields.get("#count-total")?.textContent, 13);
-  assert.equal(ui.fields.get("#count-finished")?.textContent, 10);
   assert.match(String(ui.fields.get("#filter-count")?.textContent ?? ""), /13.*13/);
   assert.match(ui.list.innerHTML, /REQ100/);
   ui.grid.select("REQ100");
